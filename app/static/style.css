@@ -1,0 +1,120 @@
+ <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: white;
+            margin: 0;
+            padding: 30px;
+            border-top: 10px solid red;
+        }
+
+        .hero {
+            padding: 80px 30px;
+            text-align: center;
+        }
+
+        .hero h1 {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+
+        .hero p {
+            color: #94a3b8;
+            font-size: 20px;
+            max-width: 760px;
+            margin: 0 auto 30px;
+        }
+
+        .cta {
+            display: inline-block;
+            background: #22c55e;
+            color: white;
+            padding: 16px 26px;
+            border-radius: 12px;
+            text-decoration: none;
+            font-weight: bold;
+            margin: 8px;
+        }
+
+        .secondary {
+            background: #334155;
+        }
+
+        .section {
+            padding: 40px 30px;
+            max-width: 1100px;
+            margin: auto;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit,minmax(240px,1fr));
+            gap: 20px;
+        }
+
+        .grid-2 {
+            display: grid !important;
+            grid-template-columns: 1fr 1fr !important;
+            gap: 20px; !important;
+        }
+
+        .grid-2 .card {
+            min-width: 0;
+            overflow-x: auto;
+        }
+
+        @media (max-width: 900px) {
+            .grid-2 {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: #1e293b;
+            padding: 24px;
+            border-radius: 16px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+        }
+
+        .card h3 {
+            margin-top: 0;
+        }
+
+        .muted {
+            color: #94a3b8;
+        }
+
+        .price {
+            font-size: 32px;
+            font-weight: bold;
+            margin: 15px 0;
+        }
+
+        .footer {
+            padding: 30px;
+            text-align: center;
+            color: #64748b;
+        }
+        .card-title-with-info {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+
+        .info-icon {
+          width: 20px;
+          height: 20px;
+          border-radius: 50%;
+          border: 1px solid rgba(255,255,255,0.35);
+          background: rgba(255,255,255,0.08);
+          color: #fff;
+          font-size: 12px;
+          font-weight: 700;
+          cursor: pointer;
+        }
+
+        .info-icon:hover {
+          background: rgba(255,255,255,0.18);
+        }
+
+    </style>

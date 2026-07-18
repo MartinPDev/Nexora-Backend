@@ -1,0 +1,317 @@
+.card-title-with-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.info-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.35);
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.info-icon:hover {
+  background: rgba(255,255,255,0.18);
+}
+
+.info-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  z-index: 9999;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.info-modal.active {
+  display: flex;
+}
+
+.info-box {
+  width: 100%;
+  max-width: 680px;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: #111827;
+  color: #f9fafb;
+  border-radius: 18px;
+  padding: 28px;
+}
+
+.close-info {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  background: transparent;
+  color: #fff;
+  border: none;
+  font-size: 26px;
+  cursor: pointer;
+}
+.market-candles-section {
+    margin-top: 24px;
+    padding: 24px;
+    background: rgba(15, 23, 42, 0.95);
+    border-radius: 22px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.triple-candle-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+    width: 100%;
+}
+
+.candle-card {
+    background: #020617;
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    border-radius: 18px;
+    padding: 16px;
+    min-height: 420px;
+}
+
+.candle-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.candle-card-header h3 {
+    margin: 0;
+    font-size: 16px;
+    color: #f8fafc;
+}
+
+.chart-symbol-select {
+    background: rgba(2, 6, 23, 0.95);
+    color: #f8fafc;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-radius: 12px;
+    padding: 8px 10px;
+    font-size: 13px;
+    outline: none;
+    cursor: pointer;
+}
+
+.chart-symbol-select:focus {
+    border-color: rgba(56, 189, 248, 0.8);
+    box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
+}
+
+.chart-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.live-price-badge {
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: rgba(34, 197, 94, 0.12);
+    border: 1px solid rgba(34, 197, 94, 0.35);
+    color: #86efac;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.candle-chart-box {
+    width: 100%;
+    height: 340px;
+    min-height: 340px;
+    background: #020617;
+    border-radius: 14px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.timeframe-sync-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 10px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    color: #cbd5e1;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+}
+
+.timeframe-sync-toggle input {
+    accent-color: #38bdf8;
+    cursor: pointer;
+}
+
+.ema-toggle-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 8px;
+    font-size: 12px;
+    color: #cbd5e1;
+}
+
+.ema-toggle-row label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.ema-toggle-row input {
+    accent-color: #38bdf8;
+    cursor: pointer;
+}
+
+.chart-ohlc-info {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #94a3b8;
+    letter-spacing: 0.3px;
+    font-family: monospace;
+}
+
+.current-ohlc-info {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #e2e8f0;
+    letter-spacing: 0.3px;
+    font-family: monospace;
+}
+
+.chart-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+    margin-bottom: 8px;
+}
+
+.chart-tool-btn {
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.9);
+    color: #cbd5e1;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: all 0.18s ease;
+}
+
+.chart-tool-btn:hover {
+    background: rgba(56, 189, 248, 0.15);
+    border-color: rgba(56, 189, 248, 0.45);
+    color: #e0f2fe;
+}
+
+@media (max-width: 1200px) {
+    .triple-candle-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .candle-card {
+        min-height: 380px;
+    }
+
+    .candle-chart-box {
+        height: 320px;
+    }
+}
+.chart-fullscreen-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: none;
+    background: rgba(3, 7, 18, 0.92);
+    backdrop-filter: blur(10px);
+    padding: 24px;
+}
+
+.chart-fullscreen-modal.is-open {
+    display: flex;
+}
+
+.chart-fullscreen-shell {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: #0b1120;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.chart-fullscreen-header {
+    height: 58px;
+    min-height: 58px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 18px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+    color: #e5e7eb;
+    font-weight: 700;
+}
+
+.chart-fullscreen-close {
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(15, 23, 42, 0.95);
+    color: #e5e7eb;
+    border-radius: 10px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.chart-fullscreen-close:hover {
+    background: rgba(30, 41, 59, 0.95);
+}
+
+.chart-fullscreen-mount {
+    flex: 1;
+    min-height: 0;
+    padding: 16px;
+}
+
+.chart-fullscreen-placeholder {
+    min-height: 420px;
+    border: 1px dashed rgba(148, 163, 184, 0.25);
+    border-radius: 16px;
+}
+
+.is-chart-fullscreen-card {
+    width: 100% !important;
+    height: 100% !important;
+    margin: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+}
+
+.is-chart-fullscreen-card .chart-container,
+.is-chart-fullscreen-card .candle-chart-container,
+.is-chart-fullscreen-card .tradingview-chart-container,
+.is-chart-fullscreen-card .market-chart-container {
+    flex: 1 !important;
+    min-height: 0 !important;
+    height: auto !important;
+}

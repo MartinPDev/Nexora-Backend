@@ -1,0 +1,66 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python environments and generated files
+venv/
+.venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# User accounts, credentials, and local databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*account*.json
+*user*.json
+*api_key*.json
+*exchange_key*.json
+billing.json
+
+# Bot configuration and runtime state
+bots.json
+strategies.json
+*position*.json
+*trade*.json
+*log*.json
+logs/
+*.log
+
+# Backups and archives may contain secrets or production data
+backups/
+*.bak
+*.backup
+*.bak_*
+*_before_*
+*_working*.py
+*_debug.py
+*debug*.py
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
+# Local tooling and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local development inventories and scratch files
+backend_app_files.txt
+=
