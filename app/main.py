@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from typing import Literal
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.json_store import load_json as load_json_file, save_json as save_json_file
+from app.reliability import health_snapshot
 from app.models.rapid_scalper_trade import RapidScalperTrade
 from fastapi.staticfiles import StaticFiles
 
@@ -238,29 +240,19 @@ def save_equity_snapshot(data):
         json.dump(snapshots, f, indent=2)
 
 def load_strategies():
-    if not os.path.exists(STRATEGIES_FILE):
-        return {}
-
-    with open(STRATEGIES_FILE, "r") as f:
-        return json.load(f)
+    return load_json_file(STRATEGIES_FILE, {})
 
 
 def save_strategies(strategies):
-    with open(STRATEGIES_FILE, "w") as f:
-        json.dump(strategies, f, indent=2)
+    save_json_file(STRATEGIES_FILE, strategies)
 
 
 def load_bots():
-    if not os.path.exists(BOTS_FILE):
-        return {}
-
-    with open(BOTS_FILE, "r") as f:
-        return json.load(f)
+    return load_json_file(BOTS_FILE, {})
 
 
 def save_bots(bots):
-    with open(BOTS_FILE, "w") as f:
-        json.dump(bots, f, indent=2)
+    save_json_file(BOTS_FILE, bots)
 
 
 def count_user_bots(username: str):
@@ -371,7 +363,7 @@ def rapid_scalper_preview(
     )
 
 MARKET_PRICE_CACHE = {}
-MARKET_PRICE_CACHE_TTL_SECONDS = 10
+MARKET_PRICE_CACHE_TTL_SECONDS = 3
 MARKET_PRICE_SYMBOLS = {
     "BTC-USD": "BTC/USD",
     "ETH-USD": "ETH/USD",
@@ -388,29 +380,39 @@ MARKET_PRICE_SYMBOLS = {
 
 def update_market_price_cache_loop():
     exchange = ccxt.kraken({
-        "enableRateLimit": True
+        "enableRateLimit": True,
+        "timeout": 10000
     })
+    kraken_symbols = list(MARKET_PRICE_SYMBOLS.values())
 
     while True:
-        for cache_symbol, kraken_symbol in MARKET_PRICE_SYMBOLS.items():
-            try:
-                ticker = exchange.fetch_ticker(kraken_symbol)
+        cycle_started = time.monotonic()
+        try:
+            tickers = exchange.fetch_tickers(kraken_symbols)
+            refreshed_at = datetime.utcnow().isoformat()
+            cached_at = time.time()
+
+            for cache_symbol, kraken_symbol in MARKET_PRICE_SYMBOLS.items():
+                ticker = tickers.get(kraken_symbol)
+                if not ticker or ticker.get("last") is None:
+                    continue
 
                 MARKET_PRICE_CACHE[cache_symbol] = {
-                    "cached_at": time.time(),
+                    "cached_at": cached_at,
                     "data": {
                         "symbol": kraken_symbol,
                         "price": ticker.get("last"),
                         "change_usd": ticker.get("change"),
                         "change_percent": ticker.get("percentage"),
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": refreshed_at,
                         "source": "background_cache"
                     }
                 }
-            except Exception as e:
-                print(f"Market price cache update failed for {cache_symbol}: {e}")
+        except Exception as e:
+            print(f"Market price cache bulk update failed: {e}")
 
-        time.sleep(1)
+        elapsed = time.monotonic() - cycle_started
+        time.sleep(max(0, 1.0 - elapsed))
 
 @app.get("/market/live-price/{symbol}")
 def get_live_market_price(symbol: str):
@@ -566,6 +568,9 @@ def rapid_scalper_history(
 @app.on_event("startup")
 def startup():
     init_users_db()
+    from app.asset_bot_supervisor import start_asset_bot_supervisor
+
+    start_asset_bot_supervisor()
 
     market_price_thread = threading.Thread(
         target=update_market_price_cache_loop,
@@ -575,7 +580,7 @@ def startup():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    return health_snapshot()
 
 @app.get("/dashboard/{username}")
 def get_dashboard(username: str):
@@ -745,53 +750,91 @@ def get_settings(username: str):
 @app.get("/strategies/{username}")
 def get_strategies(username: str):
     strategies = load_strategies()
-    return strategies.get(username, [])
+    user_strategies = strategies.get(username, [])
+    bots = load_bots().get(username, [])
+
+    usage = {}
+    for bot in bots:
+        strategy_id = bot.get("strategy_id")
+        if strategy_id:
+            usage[strategy_id] = usage.get(strategy_id, 0) + 1
+
+    return [
+        {**strategy, "assigned_bot_count": usage.get(strategy.get("id"), 0)}
+        for strategy in user_strategies
+    ]
+
+
+def _strategy_number(payload, field, default, minimum, maximum):
+    try:
+        value = float(payload.get(field, default))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail=f"{field} must be a number")
+
+    if value < minimum or value > maximum:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field} must be between {minimum} and {maximum}",
+        )
+    return value
 
 
 @app.post("/strategies/{username}/create")
 def create_strategy(username: str, strategy: dict):
     strategies = load_strategies()
+    user_strategies = strategies.setdefault(username, [])
 
-    if username not in strategies:
-        strategies[username] = []
+    name = str(strategy.get("name", "")).strip()
+    if len(name) < 2 or len(name) > 60:
+        raise HTTPException(
+            status_code=422,
+            detail="Strategy name must be between 2 and 60 characters",
+        )
+
+    mode = str(strategy.get("mode", "balanced")).lower()
+    if mode not in {"conservative", "balanced", "aggressive"}:
+        raise HTTPException(status_code=422, detail="Invalid strategy mode")
+
+    if any(item.get("name", "").lower() == name.lower() for item in user_strategies):
+        raise HTTPException(status_code=409, detail="A strategy with this name already exists")
 
     new_strategy = {
         "id": secrets.token_hex(8),
-        "name": strategy.get("name", "New Strategy"),
-        "min_score": strategy.get("min_score", 55),
-        "min_ai_probability": strategy.get("min_ai_probability", 0.40),
-        "stop_loss_percent": strategy.get("stop_loss_percent", 2.0),
-        "partial_take_profit_percent": strategy.get("partial_take_profit_percent", 2.0),
-        "trailing_stop_percent": strategy.get("trailing_stop_percent", 1.5),
-        "cooldown_hours": strategy.get("cooldown_hours", 2),
-        "mode": strategy.get("mode", "balanced"),
-        "created_at": datetime.now().isoformat()
+        "name": name,
+        "min_score": _strategy_number(strategy, "min_score", 60, 0, 100),
+        "min_ai_probability": _strategy_number(strategy, "min_ai_probability", 0.50, 0, 1),
+        "stop_loss_percent": _strategy_number(strategy, "stop_loss_percent", 2.0, 0.1, 25),
+        "partial_take_profit_percent": _strategy_number(strategy, "partial_take_profit_percent", 4.0, 0.1, 100),
+        "trailing_stop_percent": _strategy_number(strategy, "trailing_stop_percent", 1.5, 0.1, 25),
+        "cooldown_hours": _strategy_number(strategy, "cooldown_hours", 2, 0, 168),
+        "mode": mode,
+        "created_at": datetime.now().isoformat(),
     }
 
-    strategies[username].append(new_strategy)
+    user_strategies.append(new_strategy)
     save_strategies(strategies)
-
-    return new_strategy
+    return {**new_strategy, "assigned_bot_count": 0}
 
 
 @app.delete("/strategies/{username}/{strategy_id}")
 def delete_strategy(username: str, strategy_id: str):
+    bots = load_bots().get(username, [])
+    assigned = [bot for bot in bots if bot.get("strategy_id") == strategy_id]
+    if assigned:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Strategy is assigned to {len(assigned)} bot(s). Reassign or delete those bots first.",
+        )
+
     strategies = load_strategies()
-
     user_strategies = strategies.get(username, [])
+    remaining = [item for item in user_strategies if item.get("id") != strategy_id]
+    if len(remaining) == len(user_strategies):
+        raise HTTPException(status_code=404, detail="Strategy not found")
 
-    strategies[username] = [
-        s for s in user_strategies
-        if s.get("id") != strategy_id
-    ]
-
+    strategies[username] = remaining
     save_strategies(strategies)
-
-    return {
-        "success": True,
-        "deleted_strategy_id": strategy_id
-    }
-
+    return {"success": True, "deleted_strategy_id": strategy_id}
 
 @app.post("/settings/{username}")
 def save_settings(username: str, settings: dict):
@@ -1437,6 +1480,15 @@ def create_bot(username: str, bot: dict):
             "error": "Allocated cash must be greater than $0"
         }
 
+    strategy_id = str(bot.get("strategy_id", "")).strip()
+    user_strategies = load_strategies().get(username, [])
+    selected_strategy = next(
+        (item for item in user_strategies if item.get("id") == strategy_id),
+        None,
+    )
+    if not selected_strategy:
+        return {"error": "Choose a valid strategy before creating this bot"}
+
     bots = load_bots()
 
     if username not in bots:
@@ -1481,6 +1533,15 @@ def create_bot(username: str, bot: dict):
         "symbol": bot.get("symbol", "BTC/USD"),
         "timeframe": bot.get("timeframe", "15m"),
         "risk_percent": bot.get("risk_percent", 1.0),
+        "strategy_id": selected_strategy["id"],
+        "strategy_name": selected_strategy["name"],
+        "strategy_mode": selected_strategy["mode"],
+        "min_score": selected_strategy["min_score"],
+        "min_ai_probability": selected_strategy["min_ai_probability"],
+        "stop_loss_percent": selected_strategy["stop_loss_percent"],
+        "take_profit_percent": selected_strategy["partial_take_profit_percent"],
+        "trailing_stop_percent": selected_strategy["trailing_stop_percent"],
+        "cooldown_hours": selected_strategy["cooldown_hours"],
         "allocated_cash": allocated_cash,
         "bot_type": "asset_specific",
         "mode": "paper",
@@ -2261,50 +2322,91 @@ def dashboard_ui(username: str):
     </div>
 
 <div class="grid-2">
-    <div class="card">
-        <h2>
-            Strategy Builder
-            <button onclick="openStrategyInfo()" style="background:#38bdf8;color:white;">i</button>
-        </h2>
+    <div class="card" id="strategy_builder_card" style="grid-column:1 / -1;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
+            <div>
+                <div style="color:#38bdf8;font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;">Bot playbook</div>
+                <h2 style="margin:5px 0 6px;">Strategy Builder</h2>
+                <p style="color:#94a3b8;margin:0;max-width:720px;line-height:1.55;">
+                    Choose how selective and protective your bots should be. Save the strategy, then assign it when you create an Asset-Specific Bot.
+                </p>
+            </div>
+            <button onclick="openStrategyInfo()" type="button" style="background:#0f172a;border:1px solid #334155;color:#cbd5e1;padding:9px 12px;border-radius:9px;">How it works</button>
+        </div>
 
-        <input id="strategy_name" placeholder="Strategy name"
-            style="padding:10px;border-radius:8px;border:none;margin-right:8px;">
+        <div style="margin-top:20px;">
+            <div style="font-size:13px;font-weight:700;color:#cbd5e1;margin-bottom:9px;">1. Start with a preset</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;">
+                <button type="button" onclick="applyStrategyPreset('conservative')" class="strategy-preset" data-mode="conservative" style="text-align:left;padding:14px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:white;cursor:pointer;">
+                    <strong style="display:block;color:#60a5fa;">Conservative</strong>
+                    <span style="display:block;color:#94a3b8;font-size:12px;margin-top:5px;">Fewer entries, tighter risk limits.</span>
+                </button>
+                <button type="button" onclick="applyStrategyPreset('balanced')" class="strategy-preset" data-mode="balanced" style="text-align:left;padding:14px;border-radius:10px;border:1px solid #38bdf8;background:rgba(56,189,248,.08);color:white;cursor:pointer;">
+                    <strong style="display:block;color:#38bdf8;">Balanced</strong>
+                    <span style="display:block;color:#94a3b8;font-size:12px;margin-top:5px;">A practical default for most bots.</span>
+                </button>
+                <button type="button" onclick="applyStrategyPreset('aggressive')" class="strategy-preset" data-mode="aggressive" style="text-align:left;padding:14px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:white;cursor:pointer;">
+                    <strong style="display:block;color:#f59e0b;">Aggressive</strong>
+                    <span style="display:block;color:#94a3b8;font-size:12px;margin-top:5px;">More entries with wider risk limits.</span>
+                </button>
+            </div>
+        </div>
 
-        <input id="strategy_score" type="number" placeholder="Min Score"
-            style="padding:10px;border-radius:8px;border:none;margin-right:8px;width:110px;">
+        <div style="margin-top:20px;display:grid;grid-template-columns:minmax(0,2fr) minmax(260px,1fr);gap:18px;align-items:start;">
+            <div>
+                <div style="font-size:13px;font-weight:700;color:#cbd5e1;margin-bottom:9px;">2. Name and tune the controls</div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+                    <label style="color:#cbd5e1;font-size:13px;">Strategy name
+                        <input id="strategy_name" maxlength="60" placeholder="e.g. Balanced XLM" oninput="updateStrategyPreview()" style="width:100%;margin-top:6px;padding:11px;border-radius:8px;border:1px solid #334155;background:#020617;color:white;">
+                    </label>
+                    <label style="color:#cbd5e1;font-size:13px;">Minimum signal score <span title="Higher values allow fewer, stronger signals." style="color:#64748b;">ⓘ</span>
+                        <input id="strategy_score" type="number" min="0" max="100" step="1" value="60" oninput="updateStrategyPreview()" style="width:100%;margin-top:6px;padding:11px;border-radius:8px;border:1px solid #334155;background:#020617;color:white;">
+                    </label>
+                    <label style="color:#cbd5e1;font-size:13px;">Minimum AI confidence <span title="0.50 means 50% confidence." style="color:#64748b;">ⓘ</span>
+                        <input id="strategy_ai" type="number" min="0" max="1" step="0.05" value="0.50" oninput="updateStrategyPreview()" style="width:100%;margin-top:6px;padding:11px;border-radius:8px;border:1px solid #334155;background:#020617;color:white;">
+                    </label>
+                    <label style="color:#cbd5e1;font-size:13px;">Stop loss (%)
+                        <input id="strategy_stop_loss" type="number" min="0.1" max="25" step="0.1" value="2" oninput="updateStrategyPreview()" style="width:100%;margin-top:6px;padding:11px;border-radius:8px;border:1px solid #334155;background:#020617;color:white;">
+                    </label>
+                    <label style="color:#cbd5e1;font-size:13px;">Take profit (%)
+                        <input id="strategy_take_profit" type="number" min="0.1" max="100" step="0.1" value="4" oninput="updateStrategyPreview()" style="width:100%;margin-top:6px;padding:11px;border-radius:8px;border:1px solid #334155;background:#020617;color:white;">
+                    </label>
+                    <label style="color:#cbd5e1;font-size:13px;">Trailing stop (%)
+                        <input id="strategy_trailing" type="number" min="0.1" max="25" step="0.1" value="1.5" oninput="updateStrategyPreview()" style="width:100%;margin-top:6px;padding:11px;border-radius:8px;border:1px solid #334155;background:#020617;color:white;">
+                    </label>
+                    <label style="color:#cbd5e1;font-size:13px;">Cooldown (hours)
+                        <input id="strategy_cooldown" type="number" min="0" max="168" step="0.5" value="2" oninput="updateStrategyPreview()" style="width:100%;margin-top:6px;padding:11px;border-radius:8px;border:1px solid #334155;background:#020617;color:white;">
+                    </label>
+                </div>
+            </div>
 
-        <input id="strategy_ai" type="number" step="0.01" placeholder="AI Prob"
-            style="padding:10px;border-radius:8px;border:none;margin-right:8px;width:110px;">
+            <aside style="background:#020617;border:1px solid #334155;border-radius:12px;padding:16px;">
+                <div style="font-size:12px;color:#38bdf8;font-weight:800;text-transform:uppercase;letter-spacing:.1em;">Strategy summary</div>
+                <h3 id="strategy_preview_name" style="margin:9px 0 8px;">Balanced strategy</h3>
+                <p id="strategy_preview_text" style="color:#94a3b8;font-size:13px;line-height:1.55;margin:0 0 14px;"></p>
+                <div id="strategy_validation" style="min-height:18px;color:#fca5a5;font-size:12px;margin-bottom:10px;"></div>
+                <button id="strategy_save_button" onclick="createStrategy()" type="button" style="width:100%;padding:11px 14px;border:none;border-radius:9px;background:#22c55e;color:white;font-weight:800;cursor:pointer;">Save strategy</button>
+                <div id="strategy_status" role="status" style="margin-top:10px;color:#94a3b8;font-size:13px;"></div>
+            </aside>
+        </div>
 
-        <select id="strategy_mode"
-            style="padding:10px;border-radius:8px;border:none;margin-right:8px;">
-            <option value="conservative">Conservative</option>
-            <option value="balanced">Balanced</option>
-            <option value="aggressive">Aggressive</option>
-        </select>
-        <button onclick="createStrategy()"
-            style="padding:10px 14px;border:none;border-radius:8px;background:#22c55e;color:white;font-weight:bold;cursor:pointer;">
-            Save Strategy
-        </button>
-
-        <span id="strategy_status" style="margin-left:12px;color:#94a3b8;"></span>
-
-        <table style="margin-top:20px;">
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Mode</th>
-                    <th>Min Score</th>
-                    <th>AI Prob</th>
-                    <th>Stop Loss</th>
-                    <th>Partial TP</th>
-                    <th>Trailing</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody id="strategies"></tbody>
-        </table>
+        <div style="margin-top:24px;border-top:1px solid #1e293b;padding-top:18px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                <div>
+                    <h3 style="margin:0 0 4px;">Saved strategies</h3>
+                    <div style="color:#64748b;font-size:12px;">Assigned strategies cannot be deleted until their bots are removed.</div>
+                </div>
+                <span id="strategy_count" style="color:#94a3b8;font-size:13px;"></span>
+            </div>
+            <div style="overflow-x:auto;margin-top:12px;">
+                <table style="min-width:900px;">
+                    <thead><tr><th>Name</th><th>Preset</th><th>Signal filter</th><th>Stop</th><th>Target</th><th>Trailing</th><th>Cooldown</th><th>Bots</th><th>Action</th></tr></thead>
+                    <tbody id="strategies"></tbody>
+                </table>
+            </div>
+        </div>
     </div>
+
 
 
     <div class="card">
@@ -2342,6 +2444,10 @@ def dashboard_ui(username: str):
                 <option value="ONDO/USD">ONDO/USD</option>
             </select>
 
+            <select id="new_bot_strategy" style="padding:10px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:white;margin-right:8px;min-width:190px;">
+                <option value="">Choose a strategy</option>
+            </select>
+
             <input
                 id="new_bot_allocated_cash"
                 type="number"
@@ -2374,6 +2480,7 @@ def dashboard_ui(username: str):
                 <tr>
                     <th>Name</th>
                     <th>Pair</th>
+                    <th>Strategy</th>
                     <th>Allocated Cash</th>
                     <th>Price</th>
                     <th>$ change</th>
@@ -3905,7 +4012,7 @@ async function loadEquityChart() {{
         if (bots.length === 0) {{
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="10" style="color:#94a3b8;">
+                    <td colspan="12" style="color:#94a3b8;">
                         No bots created yet.
                     </td>
                 </tr>
@@ -3963,6 +4070,7 @@ async function loadEquityChart() {{
             row.innerHTML = `
                 <td>${{bot.name}}</td>
                 <td>${{bot.symbol}}</td>
+                <td>${{bot.strategy_name || 'Legacy default'}}</td>
                 <td>${{bot.allocated_cash ? '$' + Number(bot.allocated_cash).toFixed(2) : 'Not set'}}</td>
                 <td id="bot_price_${{bot.id}}">${{priceText}}</td>
                 <td id="bot_change_usd_${{bot.id}}" style="color:${{changeColor}};">${{changeUsdText}}</td>
@@ -4108,8 +4216,16 @@ async function loadEquityChart() {{
     async function createBot() {{
         const name = document.getElementById('new_bot_name').value || 'New Bot';
         const symbol = document.getElementById('new_bot_symbol').value || 'BTC/USD';
+        const strategyId = document.getElementById('new_bot_strategy').value;
         const allocatedCash = parseFloat(document.getElementById('new_bot_allocated_cash').value || 0);
         const status = document.getElementById('bot_create_status');
+
+        if (!strategyId) {{
+            status.innerText = 'Choose a strategy before creating this bot';
+            status.style.color = '#ef4444';
+            document.getElementById('new_bot_strategy').focus();
+            return;
+        }}
 
         if (!allocatedCash || allocatedCash <= 0) {{
             status.innerText = 'Enter an allocated cash amount greater than $0';
@@ -4125,6 +4241,7 @@ async function loadEquityChart() {{
             body: JSON.stringify({{
                 name: name,
                 symbol: symbol,
+                strategy_id: strategyId,
                 allocated_cash: allocatedCash,
                 timeframe: '15m',
                 risk_percent: 1.0
@@ -4279,96 +4396,184 @@ async function loadEquityChart() {{
         }}
     }}
 
+    let latestStrategies = [];
+    let currentStrategyMode = "balanced";
+
+    const strategyPresets = {{
+        conservative: {{ score: 72, ai: 0.65, stop: 1.5, target: 3, trailing: 1, cooldown: 4 }},
+        balanced: {{ score: 60, ai: 0.50, stop: 2, target: 4, trailing: 1.5, cooldown: 2 }},
+        aggressive: {{ score: 48, ai: 0.35, stop: 3, target: 6, trailing: 2.5, cooldown: 1 }}
+    }};
+
+    function escapeStrategyText(value) {{
+        return String(value ?? "").replace(/[&<>"']/g, character => ({{
+            "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+        }})[character]);
+    }}
+
+    function strategyFormValues() {{
+        return {{
+            name: document.getElementById("strategy_name").value.trim(),
+            mode: currentStrategyMode,
+            min_score: Number(document.getElementById("strategy_score").value),
+            min_ai_probability: Number(document.getElementById("strategy_ai").value),
+            stop_loss_percent: Number(document.getElementById("strategy_stop_loss").value),
+            partial_take_profit_percent: Number(document.getElementById("strategy_take_profit").value),
+            trailing_stop_percent: Number(document.getElementById("strategy_trailing").value),
+            cooldown_hours: Number(document.getElementById("strategy_cooldown").value)
+        }};
+    }}
+
+    function validateStrategyForm(showNameError = true) {{
+        const values = strategyFormValues();
+        const errors = [];
+        if (showNameError && (values.name.length < 2 || values.name.length > 60)) errors.push("Enter a strategy name (2–60 characters).");
+        if (values.min_score < 0 || values.min_score > 100) errors.push("Signal score must be 0–100.");
+        if (values.min_ai_probability < 0 || values.min_ai_probability > 1) errors.push("AI confidence must be 0–1.");
+        if (values.stop_loss_percent < 0.1 || values.stop_loss_percent > 25) errors.push("Stop loss must be 0.1–25%.");
+        if (values.partial_take_profit_percent < 0.1 || values.partial_take_profit_percent > 100) errors.push("Take profit must be 0.1–100%.");
+        if (values.trailing_stop_percent < 0.1 || values.trailing_stop_percent > 25) errors.push("Trailing stop must be 0.1–25%.");
+        if (values.cooldown_hours < 0 || values.cooldown_hours > 168) errors.push("Cooldown must be 0–168 hours.");
+        return errors;
+    }}
+
+    function updateStrategyPreview() {{
+        const values = strategyFormValues();
+        const name = values.name || currentStrategyMode.charAt(0).toUpperCase() + currentStrategyMode.slice(1) + " strategy";
+        document.getElementById("strategy_preview_name").innerText = name;
+        document.getElementById("strategy_preview_text").innerText =
+            `Requires score ${{values.min_score}} and ${{Math.round(values.min_ai_probability * 100)}}% AI confidence. ` +
+            `Exits at -${{values.stop_loss_percent}}% stop loss or +${{values.partial_take_profit_percent}}% target, ` +
+            `with a ${{values.trailing_stop_percent}}% trailing stop and ${{values.cooldown_hours}}h cooldown.`;
+        const errors = validateStrategyForm(false);
+        document.getElementById("strategy_validation").innerText = errors[0] || "Controls are within safe limits.";
+        document.getElementById("strategy_validation").style.color = errors.length ? "#fca5a5" : "#86efac";
+        document.getElementById("strategy_save_button").disabled = errors.length > 0;
+        document.getElementById("strategy_save_button").style.opacity = errors.length ? "0.55" : "1";
+    }}
+
+    function applyStrategyPreset(mode) {{
+        const preset = strategyPresets[mode];
+        if (!preset) return;
+        currentStrategyMode = mode;
+        document.getElementById("strategy_score").value = preset.score;
+        document.getElementById("strategy_ai").value = preset.ai;
+        document.getElementById("strategy_stop_loss").value = preset.stop;
+        document.getElementById("strategy_take_profit").value = preset.target;
+        document.getElementById("strategy_trailing").value = preset.trailing;
+        document.getElementById("strategy_cooldown").value = preset.cooldown;
+        document.querySelectorAll(".strategy-preset").forEach(button => {{
+            const selected = button.dataset.mode === mode;
+            button.style.borderColor = selected ? "#38bdf8" : "#334155";
+            button.style.background = selected ? "rgba(56,189,248,.08)" : "#0f172a";
+        }});
+        updateStrategyPreview();
+    }}
+
     async function loadStrategies() {{
-        const res = await fetch('/strategies/{username}');
-        const strategies = await res.json();
+        const tbody = document.getElementById("strategies");
+        const selector = document.getElementById("new_bot_strategy");
+        const previousSelection = selector ? selector.value : "";
 
-        const tbody = document.getElementById('strategies');
-        tbody.innerHTML = '';
-
-        if (strategies.length === 0) {{
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="8" style="color:#94a3b8;">
-                        No strategies created yet.
-                    </td>
-                </tr>
-            `;
+        try {{
+            const res = await fetch('/strategies/{username}');
+            if (!res.ok) throw new Error("Unable to load strategies");
+            latestStrategies = await res.json();
+        }} catch (error) {{
+            tbody.innerHTML = `<tr><td colspan="9" style="color:#fca5a5;">${{escapeStrategyText(error.message)}}</td></tr>`;
             return;
         }}
 
-        for (const strategy of strategies) {{
+        document.getElementById("strategy_count").innerText = `${{latestStrategies.length}} saved`;
+        tbody.innerHTML = '';
+
+        if (selector) {{
+            selector.innerHTML = '<option value="">Choose a strategy</option>';
+            latestStrategies.forEach(strategy => {{
+                const option = document.createElement("option");
+                option.value = strategy.id;
+                option.textContent = `${{strategy.name}} (${{strategy.mode}})`;
+                selector.appendChild(option);
+            }});
+            if (latestStrategies.some(strategy => strategy.id === previousSelection)) selector.value = previousSelection;
+            else if (latestStrategies.length === 1) selector.value = latestStrategies[0].id;
+        }}
+
+        if (latestStrategies.length === 0) {{
+            tbody.innerHTML = '<tr><td colspan="9" style="color:#94a3b8;padding:18px;">No strategies yet. Choose a preset above and save your first strategy.</td></tr>';
+            return;
+        }}
+
+        for (const strategy of latestStrategies) {{
             const row = document.createElement('tr');
-
+            const assigned = Number(strategy.assigned_bot_count || 0);
             row.innerHTML = `
-                <td>${{strategy.name}}</td>
-                <td>${{strategy.mode}}</td>
-                <td>${{strategy.min_score}}</td>
-                <td>${{strategy.min_ai_probability}}</td>
-                <td>${{strategy.stop_loss_percent}}%</td>
-                <td>${{strategy.partial_take_profit_percent}}%</td>
-                <td>${{strategy.trailing_stop_percent}}%</td>
-                <td>
-                    <button
-                        onclick="deleteStrategy('${{strategy.id}}')"
-                        style="padding:8px 10px;border:none;border-radius:8px;background:#ef4444;color:white;cursor:pointer;"
-                    >
-                        Delete
-                    </button>
-                </td>
+                <td><strong>${{escapeStrategyText(strategy.name)}}</strong></td>
+                <td style="text-transform:capitalize;">${{escapeStrategyText(strategy.mode)}}</td>
+                <td>${{Number(strategy.min_score)}} / ${{Math.round(Number(strategy.min_ai_probability) * 100)}}%</td>
+                <td>-${{Number(strategy.stop_loss_percent)}}%</td>
+                <td>+${{Number(strategy.partial_take_profit_percent)}}%</td>
+                <td>${{Number(strategy.trailing_stop_percent)}}%</td>
+                <td>${{Number(strategy.cooldown_hours)}}h</td>
+                <td><span style="color:${{assigned ? '#38bdf8' : '#64748b'}};">${{assigned}}</span></td>
+                <td><button type="button" ${{assigned ? 'disabled' : ''}} onclick="deleteStrategy('${{strategy.id}}')" style="padding:7px 10px;border:none;border-radius:7px;background:${{assigned ? '#334155' : '#ef4444'}};color:white;cursor:${{assigned ? 'not-allowed' : 'pointer'}};">${{assigned ? 'In use' : 'Delete'}}</button></td>
             `;
-
             tbody.appendChild(row);
         }}
     }}
 
     async function createStrategy() {{
-        const mode = document.getElementById('strategy_mode').value;
-
-        let minScore = parseInt(document.getElementById('strategy_score').value || 55);
-        let minAi = parseFloat(document.getElementById('strategy_ai').value || 0.40);
-
-        if (mode === 'conservative') {{
-            minScore = minScore || 70;
-            minAi = minAi || 0.60;
+        const status = document.getElementById("strategy_status");
+        const button = document.getElementById("strategy_save_button");
+        const errors = validateStrategyForm(true);
+        if (errors.length) {{
+            status.innerText = errors[0];
+            status.style.color = "#fca5a5";
+            return;
         }}
 
-        if (mode === 'aggressive') {{
-            minScore = minScore || 50;
-            minAi = minAi || 0.35;
+        button.disabled = true;
+        button.innerText = "Saving…";
+        status.innerText = "";
+        try {{
+            const res = await fetch('/strategies/{username}/create', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify(strategyFormValues())
+            }});
+            const data = await res.json();
+            if (!res.ok || data.error || data.detail) throw new Error(data.detail || data.error || "Unable to save strategy");
+            status.innerText = `Saved “${{data.name}}”. Select it when creating a bot.`;
+            status.style.color = "#86efac";
+            document.getElementById("strategy_name").value = "";
+            await loadStrategies();
+            const selector = document.getElementById("new_bot_strategy");
+            if (selector) selector.value = data.id;
+            updateStrategyPreview();
+        }} catch (error) {{
+            status.innerText = error.message;
+            status.style.color = "#fca5a5";
+        }} finally {{
+            button.disabled = false;
+            button.innerText = "Save strategy";
         }}
-
-        const payload = {{
-            name: document.getElementById('strategy_name').value || 'New Strategy',
-            min_score: minScore,
-            min_ai_probability: minAi,
-            mode: mode,
-            stop_loss_percent: 2.0,
-            partial_take_profit_percent: 2.0,
-            trailing_stop_percent: 1.5,
-            cooldown_hours: 2
-        }};
-
-        const res = await fetch('/strategies/{username}/create', {{
-            method: 'POST',
-            headers: {{
-                'Content-Type': 'application/json'
-            }},
-            body: JSON.stringify(payload)
-        }});
-
-        const data = await res.json();
-
-        document.getElementById('strategy_status').innerText =
-            data.error ? data.error : 'Strategy saved';
-
-        document.getElementById('strategy_name').value = '';
-        document.getElementById('strategy_score').value = '';
-        document.getElementById('strategy_ai').value = '';
-
-        loadStrategies();
     }}
 
+    async function deleteStrategy(strategyId) {{
+        const strategy = latestStrategies.find(item => item.id === strategyId);
+        if (!strategy || Number(strategy.assigned_bot_count || 0) > 0) return;
+        if (!confirm(`Delete strategy “${{strategy.name}}”?`)) return;
+
+        const res = await fetch('/strategies/{username}/' + strategyId, {{method: 'DELETE'}});
+        const data = await res.json();
+        if (!res.ok || data.detail) {{
+            const status = document.getElementById("strategy_status");
+            status.innerText = data.detail || "Unable to delete strategy";
+            status.style.color = "#fca5a5";
+            return;
+        }}
+        await loadStrategies();
+    }}
     function openDashboardBotInfo() {{
         const modal = document.getElementById("dashboardBotInfoModal");
         if (modal) {{
@@ -4400,15 +4605,6 @@ async function loadEquityChart() {{
     }}
 
 
-    async function deleteStrategy(strategyId) {{
-        await fetch('/strategies/{username}/' + strategyId, {{
-            method: 'DELETE'
-        }});
-
-        loadStrategies();
-    }}
-
-
 
     loadDashboard();
     loadBots();
@@ -4420,6 +4616,7 @@ async function loadEquityChart() {{
     loadBotLogs();
     loadEquityChart();
     loadBilling();
+    applyStrategyPreset('balanced');
     loadStrategies();
     // loadLiveMarketPrice();
     restoreBotConsoleState();

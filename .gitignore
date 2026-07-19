@@ -40,6 +40,8 @@ strategies.json
 *log*.json
 logs/
 *.log
+*.lock
+*.tmp
 
 # Backups and archives may contain secrets or production data
 backups/
