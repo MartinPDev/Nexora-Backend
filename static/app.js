@@ -451,6 +451,10 @@ let fullscreenChartState = {
     placeholder: null,
     originalParent: null,
     originalNextSibling: null,
+    originalCardStyle: null,
+    originalContainerStyle: null,
+    originalChartWidth: null,
+    originalChartHeight: null,
 };
 
 function findChartCardFromButton(button) {
@@ -488,6 +492,30 @@ function resizeChartByNumber(chartNumber) {
     }, 400);
 }
 
+function resizeChartAfterRestore(chartNumber) {
+    const chartData = candleCharts[chartNumber];
+
+    if (!chartData || !chartData.chart || !chartData.container) {
+        return;
+    }
+
+    const applyRestoredSize = () => {
+        const width = Math.max(1, Math.floor(chartData.container.clientWidth));
+        const height = Math.max(1, Math.floor(chartData.container.clientHeight));
+
+        chartData.chart.applyOptions({ width, height });
+        chartData.chart.timeScale().fitContent();
+    };
+
+    // Two frames let the browser finish restoring the three-column grid
+    // before Lightweight Charts measures its canvas again.
+    requestAnimationFrame(() => {
+        requestAnimationFrame(applyRestoredSize);
+    });
+
+    setTimeout(applyRestoredSize, 250);
+}
+
 function openChartFullscreen(chartNumber, button) {
     const modal = document.getElementById("chartFullscreenModal");
     const mount = document.getElementById("chartFullscreenMount");
@@ -518,6 +546,7 @@ function openChartFullscreen(chartNumber, button) {
 
     const placeholder = document.createElement("div");
     placeholder.className = "chart-fullscreen-placeholder";
+    const originalChartRect = chartData.container.getBoundingClientRect();
 
     fullscreenChartState = {
         chartNumber,
@@ -525,6 +554,10 @@ function openChartFullscreen(chartNumber, button) {
         placeholder,
         originalParent: card.parentNode,
         originalNextSibling: card.nextSibling,
+        originalCardStyle: card.getAttribute("style"),
+        originalContainerStyle: chartData.container.getAttribute("style"),
+        originalChartWidth: originalChartRect.width,
+        originalChartHeight: originalChartRect.height,
     };
 
     card.parentNode.insertBefore(placeholder, card);
@@ -565,29 +598,58 @@ function closeChartFullscreen() {
         placeholder,
         originalParent,
         originalNextSibling,
+        originalCardStyle,
+        originalContainerStyle,
+        originalChartWidth,
+        originalChartHeight,
     } = fullscreenChartState;
+
+    if (modal) {
+        modal.classList.remove("is-open");
+    }
 
     card.classList.remove("is-chart-fullscreen-card");
 
-    if (originalNextSibling && originalNextSibling.parentNode === originalParent) {
+    if (placeholder && placeholder.parentNode === originalParent) {
+        placeholder.replaceWith(card);
+    } else if (originalNextSibling && originalNextSibling.parentNode === originalParent) {
         originalParent.insertBefore(card, originalNextSibling);
     } else {
         originalParent.appendChild(card);
     }
 
-    if (placeholder && placeholder.parentNode) {
-        placeholder.parentNode.removeChild(placeholder);
+    if (originalCardStyle === null) {
+        card.removeAttribute("style");
+    } else {
+        card.setAttribute("style", originalCardStyle);
+    }
+
+    const chartData = candleCharts[chartNumber];
+    if (chartData && chartData.container) {
+        if (originalContainerStyle === null) {
+            chartData.container.removeAttribute("style");
+        } else {
+            chartData.container.setAttribute("style", originalContainerStyle);
+        }
+
+        if (originalChartWidth > 0 && originalChartHeight > 0) {
+            chartData.chart.applyOptions({
+                width: Math.round(originalChartWidth),
+                height: Math.round(originalChartHeight),
+            });
+        }
     }
 
     if (mount) {
         mount.innerHTML = "";
     }
 
-    if (modal) {
-        modal.classList.remove("is-open");
-    }
-
     document.body.classList.remove("chart-fullscreen-active");
+
+    // Force the grid to settle after the fullscreen card is returned. The
+    // chart canvas can otherwise retain its fullscreen intrinsic width and
+    // temporarily enlarge the grid column.
+    void originalParent.offsetWidth;
 
     fullscreenChartState = {
         chartNumber: null,
@@ -595,9 +657,14 @@ function closeChartFullscreen() {
         placeholder: null,
         originalParent: null,
         originalNextSibling: null,
+        originalCardStyle: null,
+        originalContainerStyle: null,
+        originalChartWidth: null,
+        originalChartHeight: null,
     };
 
-    resizeChartByNumber(chartNumber);
+    resizeChartAfterRestore(chartNumber);
+    setTimeout(resizeAllCharts, 500);
 }
 
 document.addEventListener("click", function (event) {

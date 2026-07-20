@@ -6,18 +6,19 @@ import os
 import time
 import threading
 import sqlite3
-import hashlib
 import secrets
 import stripe
 import ccxt
 import urllib.request
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal, engine, get_db
+from app.eligibility import is_eligible_adult
+from app.legacy_auth import hash_password, verify_password
 from app.core.json_store import load_json as load_json_file, save_json as save_json_file
 from app.reliability import health_snapshot
 from app.models.rapid_scalper_trade import RapidScalperTrade
@@ -44,17 +45,20 @@ def save_bot_control(username: str, enabled: bool):
 
     return data
 
-DASHBOARD_FILE = "/home/marty/sniper_bot/dashboard_status.json"
-CONTROL_FILE = "/home/marty/sniper_bot/bot_control.json"
-TRADE_RESULTS_FILE = "/home/marty/sniper_bot/trade_results.csv"
-SETTINGS_FILE = "/home/marty/sniper_bot/bot_settings.json"
-BOT_LOG_FILE = "/home/marty/sniper_bot/bot.log"
-EQUITY_HISTORY_FILE = "/home/marty/sniper_bot/equity_history.json"
-USERS_DB = "/home/marty/backend/users.db"
-BILLING_FILE = "/home/marty/backend/billing.json"
-BOTS_FILE = "/home/marty/backend/bots.json"
-ASSET_BOT_POSITIONS_FILE = "/home/marty/backend/asset_bot_positions.json"
-STRATEGIES_FILE = "/home/marty/backend/strategies.json"
+BACKEND_BASE_DIR = os.path.abspath(os.getenv("NEXORA_BACKEND_DIR", "/home/marty/backend"))
+LEGACY_BOT_DATA_DIR = os.path.abspath(os.getenv("NEXORA_LEGACY_BOT_DIR", "/home/marty/sniper_bot"))
+PUBLIC_BASE_URL = os.getenv("NEXORA_PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+DASHBOARD_FILE = os.path.join(LEGACY_BOT_DATA_DIR, "dashboard_status.json")
+CONTROL_FILE = os.path.join(LEGACY_BOT_DATA_DIR, "bot_control.json")
+TRADE_RESULTS_FILE = os.path.join(LEGACY_BOT_DATA_DIR, "trade_results.csv")
+SETTINGS_FILE = os.path.join(LEGACY_BOT_DATA_DIR, "bot_settings.json")
+BOT_LOG_FILE = os.path.join(LEGACY_BOT_DATA_DIR, "bot.log")
+EQUITY_HISTORY_FILE = os.path.join(LEGACY_BOT_DATA_DIR, "equity_history.json")
+USERS_DB = os.path.join(BACKEND_BASE_DIR, "users.db")
+BILLING_FILE = os.path.join(BACKEND_BASE_DIR, "billing.json")
+BOTS_FILE = os.path.join(BACKEND_BASE_DIR, "bots.json")
+ASSET_BOT_POSITIONS_FILE = os.path.join(BACKEND_BASE_DIR, "asset_bot_positions.json")
+STRATEGIES_FILE = os.path.join(BACKEND_BASE_DIR, "strategies.json")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRICE_IDS = {
@@ -86,14 +90,23 @@ class AuthRequest(BaseModel):
     username: str
     password: str
     email: str | None = None
+    date_of_birth: date | None = None
+
+
+def require_adult_date_of_birth(value: date | None) -> date:
+    if value is None:
+        raise HTTPException(status_code=400, detail="Date of birth is required.")
+    if not is_eligible_adult(value):
+        raise HTTPException(
+            status_code=403,
+            detail="Nexora accounts require users to be 18 or older.",
+        )
+    return value
 
 settings = get_settings()
 
 app = FastAPI(title=settings.app_name)
 app.mount("/static", StaticFiles(directory="static"), name="static")
-from fastapi.staticfiles import StaticFiles
-
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 def require_elite_access(x_session_token: str = Header(None)):
     username = SESSIONS.get(x_session_token or "")
@@ -225,14 +238,15 @@ def init_users_db():
     except sqlite3.OperationalError:
         pass
 
+    try:
+        cur.execute("ALTER TABLE app_users ADD COLUMN date_of_birth TEXT")
+    except sqlite3.OperationalError:
+        pass
+
 
     conn.commit()
     conn.close()
 
-
-def hash_password(password: str, salt: str):
-    value = password + salt
-    return hashlib.sha256(value.encode()).hexdigest()
 
 def get_app_user(username: str):
     conn = sqlite3.connect(USERS_DB)
@@ -320,14 +334,14 @@ def activate_user_plan(username: str, plan: str):
             "max_bots": 3,
             "max_positions": 5,
             "paper_trading": True,
-            "live_trading": True,
+            "live_trading": False,
             "advanced_ai": True
         },
         "premium": {
             "max_bots": 10,
             "max_positions": 15,
             "paper_trading": True,
-            "live_trading": True,
+            "live_trading": False,
             "advanced_ai": True
         }
     }
@@ -796,7 +810,7 @@ def get_asset_bot_positions(username: str):
 
 @app.post("/asset-bot-close-position/{username}/{bot_id}")
 def close_asset_bot_position(username: str, bot_id: str):
-    from app.asset_bot_engine import close_existing_paper_position
+    from app.bot3 import close_existing_paper_position
 
     trade = close_existing_paper_position(username, bot_id)
     if not trade:
@@ -976,6 +990,8 @@ def register_user(auth: AuthRequest):
     if not username or not password:
         return {"error": "Username and password are required"}
 
+    date_of_birth = require_adult_date_of_birth(auth.date_of_birth)
+
     salt = secrets.token_hex(16)
     password_hash = hash_password(password, salt)
 
@@ -988,10 +1004,18 @@ def register_user(auth: AuthRequest):
         cur.execute(
             """
             INSERT INTO app_users
-            (username, email, password_hash, salt, email_verified, verification_token)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (username, email, password_hash, salt, email_verified, verification_token, date_of_birth)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (username, auth.email, password_hash, salt, 0, verification_token)
+            (
+                username,
+                auth.email,
+                password_hash,
+                salt,
+                0,
+                verification_token,
+                date_of_birth.isoformat(),
+            )
         )
 
         conn.commit()
@@ -1001,7 +1025,7 @@ def register_user(auth: AuthRequest):
             "success": True,
             "username": username,
             "message": "Account created. Verify email before login.",
-            "verification_link": f"http://127.0.0.1:8000/auth/verify-email/{verification_token}"
+            "verification_link": f"{PUBLIC_BASE_URL}/auth/verify-email/{verification_token}"
         }
 
     except sqlite3.IntegrityError:
@@ -1015,6 +1039,8 @@ def register_basic_user(auth: AuthRequest):
     if not username or not password:
         return {"error": "Username and password are required"}
 
+    date_of_birth = require_adult_date_of_birth(auth.date_of_birth)
+
     existing_user = get_app_user(username)
 
     if not existing_user:
@@ -1026,8 +1052,8 @@ def register_basic_user(auth: AuthRequest):
             cur = conn.cursor()
 
             cur.execute(
-                "INSERT INTO app_users (username, password_hash, salt) VALUES (?, ?, ?)",
-                (username, password_hash, salt)
+                "INSERT INTO app_users (username, password_hash, salt, date_of_birth) VALUES (?, ?, ?, ?)",
+                (username, password_hash, salt, date_of_birth.isoformat())
             )
 
             conn.commit()
@@ -1045,8 +1071,8 @@ def register_basic_user(auth: AuthRequest):
                     "quantity": 1
                 }
             ],
-            success_url="http://127.0.0.1:8000/login",
-            cancel_url="http://127.0.0.1:8000/signup-basic",
+            success_url=f"{PUBLIC_BASE_URL}/login",
+            cancel_url=f"{PUBLIC_BASE_URL}/signup-basic",
             metadata={
                 "username": username,
                 "plan": "basic"
@@ -1195,7 +1221,7 @@ def landing_page():
 
             <p>
                 The trading bot is an automated assistant that monitors live market data, analyzes trading signals,
-                and manages simulated or connected exchange trades based on the strategy settings you choose.
+                and manages simulated paper positions based on the strategy settings you choose.
             </p>
 
             <h3>What the bot does</h3>
@@ -1233,9 +1259,7 @@ def login_user(auth: AuthRequest):
     if email_verified != 1:
         return {"error": "Email not verified"}
 
-    password_hash = hash_password(password, salt)
-
-    if password_hash != stored_hash:
+    if not verify_password(password, salt, stored_hash):
         return {"error": "Invalid username or password"}
 
     token = secrets.token_hex(32)
@@ -1350,6 +1374,13 @@ def signup_basic_page():
 
         <input id="username" placeholder="Username">
         <input id="password" type="password" placeholder="Password">
+        <div id="registration_age_fields" style="display:none;">
+            <input id="date_of_birth" type="date" aria-label="Date of birth">
+            <div class="small">You must be 18 or older to create a Nexora account.</div>
+        </div>
+        <input id="date_of_birth" type="date" aria-label="Date of birth" required>
+
+        <div class="small">You must be 18 or older to create a Nexora account.</div>
 
         <button onclick="signupBasic()">Continue to Checkout</button>
 
@@ -1360,6 +1391,7 @@ def signup_basic_page():
 async function signupBasic() {
     const username = document.getElementById("username").value;
     const password = document.getElementById("password").value;
+    const dateOfBirth = document.getElementById("date_of_birth").value;
     const message = document.getElementById("message");
 
     const res = await fetch("/auth/register-basic", {
@@ -1369,14 +1401,17 @@ async function signupBasic() {
         },
         body: JSON.stringify({
             username: username,
-            password: password
+            password: password,
+            date_of_birth: dateOfBirth
         })
     });
 
     const data = await res.json();
 
-    if (data.error) {
-        message.innerText = data.error;
+    if (!res.ok || data.error || data.detail) {
+        message.innerText = typeof data.detail === "string"
+            ? data.detail
+            : (data.error || "Please enter a valid date of birth and account information.");
         return;
     }
 
@@ -1422,14 +1457,14 @@ def set_plan(username: str, plan: str):
             "max_bots": 3,
             "max_positions": 5,
             "paper_trading": True,
-            "live_trading": True,
+            "live_trading": False,
             "advanced_ai": True
         },
         "premium": {
             "max_bots": 10,
             "max_positions": 15,
             "paper_trading": True,
-            "live_trading": True,
+            "live_trading": False,
             "advanced_ai": True
         }
     }
@@ -1466,8 +1501,8 @@ def create_checkout_session(username: str, plan: str):
                     "quantity": 1
                 }
             ],
-            success_url="http://127.0.0.1:8000/dashboard-ui/" + username,
-            cancel_url="http://127.0.0.1:8000/dashboard-ui/" + username,
+            success_url=f"{PUBLIC_BASE_URL}/dashboard-ui/{username}",
+            cancel_url=f"{PUBLIC_BASE_URL}/dashboard-ui/{username}",
             metadata={
                 "username": username,
                 "plan": plan
@@ -1494,8 +1529,8 @@ def create_basic_checkout(username: str):
                     "quantity": 1
                 }
             ],
-            success_url="http://127.0.0.1:8000/dashboard-ui/" + username,
-            cancel_url="http://127.0.0.1:8000/dashboard-ui/" + username,
+            success_url=f"{PUBLIC_BASE_URL}/dashboard-ui/{username}",
+            cancel_url=f"{PUBLIC_BASE_URL}/dashboard-ui/{username}",
             metadata={
                 "username": username,
                 "plan": "basic"
@@ -1516,8 +1551,8 @@ def checkout_pro(username: str):
             "price": STRIPE_PRICE_IDS["pro"],
             "quantity": 1
         }],
-        success_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
-        cancel_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
+        success_url=f"{PUBLIC_BASE_URL}/dashboard-ui/{username}",
+        cancel_url=f"{PUBLIC_BASE_URL}/dashboard-ui/{username}",
         metadata={
             "username": username,
             "plan": "pro"
@@ -1535,8 +1570,8 @@ def checkout_premium(username: str):
             "price": STRIPE_PRICE_IDS["premium"],
             "quantity": 1
         }],
-        success_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
-        cancel_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
+        success_url=f"{PUBLIC_BASE_URL}/dashboard-ui/{username}",
+        cancel_url=f"{PUBLIC_BASE_URL}/dashboard-ui/{username}",
         metadata={
             "username": username,
             "plan": "elite"
@@ -1909,11 +1944,13 @@ function toggleMode() {
 
     if (mode === "login") {
         mode = "register";
+        document.getElementById("registration_age_fields").style.display = "block";
         title.innerText = "Register";
         button.innerText = "Create Account";
         link.innerText = "Already have an account? Login";
     } else {
         mode = "login";
+        document.getElementById("registration_age_fields").style.display = "none";
         title.innerText = "Login";
         button.innerText = "Login";
         link.innerText = "Need an account? Register";
@@ -1923,6 +1960,7 @@ function toggleMode() {
 async function submitAuth() {
     const username = document.getElementById("username").value;
     const password = document.getElementById("password").value;
+    const dateOfBirth = document.getElementById("date_of_birth").value;
     const message = document.getElementById("message");
 
     const res = await fetch("/auth/" + mode, {
@@ -1932,14 +1970,17 @@ async function submitAuth() {
         },
         body: JSON.stringify({
             username: username,
-            password: password
+            password: password,
+            date_of_birth: mode === "register" ? dateOfBirth : null
         })
     });
 
     const data = await res.json();
 
-    if (data.error) {
-        message.innerText = data.error;
+    if (!res.ok || data.error || data.detail) {
+        message.innerText = typeof data.detail === "string"
+            ? data.detail
+            : (data.error || "Please enter valid account information.");
         return;
     }
 
@@ -5245,7 +5286,7 @@ async function loadEquityChart() {{
 
         <h3>Best Practice</h3>
         <p>
-            Always test strategies in Paper mode first before using Live mode.
+            This beta operates in Paper mode only. No exchange order is placed.
         </p>
 
         </div>
@@ -5300,7 +5341,7 @@ async function loadEquityChart() {{
 
 
         <h3>Best practice</h3>
-        <p>Use preview first, then paper trade. Review the result in Recent Rapid Scalper Setups. Do not use Live mode until the setup has been tested repeatedly and behaves as expected.</p>
+        <p>Use preview first, then paper simulation. Review the result in Recent Rapid Scalper Setups. This beta does not place exchange orders.</p>
 
 
         <h3>Important</h3>

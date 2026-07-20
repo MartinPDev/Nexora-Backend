@@ -3,7 +3,7 @@ import os
 import threading
 from datetime import UTC, datetime
 
-from app.asset_bot_engine import (
+from app.bot3 import (
     BOTS_FILE,
     POSITIONS_FILE,
     get_enabled_asset_bots,

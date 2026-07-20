@@ -66,7 +66,7 @@
 
 .triple-candle-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 18px;
     width: 100%;
 }
@@ -77,6 +77,17 @@
     border-radius: 18px;
     padding: 16px;
     min-height: 420px;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    contain: layout paint;
+}
+
+.candle-card .chart-container {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
 }
 
 .candle-card-header {
@@ -128,11 +139,19 @@
 
 .candle-chart-box {
     width: 100%;
+    min-width: 0;
+    max-width: 100%;
     height: 340px;
     min-height: 340px;
+    overflow: hidden;
     background: #020617;
     border-radius: 14px;
     border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.candle-chart-box > div,
+.candle-chart-box canvas {
+    max-width: 100%;
 }
 
 .timeframe-sync-toggle {
@@ -305,9 +324,13 @@
     margin: 0 !important;
     display: flex !important;
     flex-direction: column !important;
+    max-width: none !important;
+    overflow: visible !important;
+    contain: none !important;
 }
 
 .is-chart-fullscreen-card .chart-container,
+.is-chart-fullscreen-card .candle-chart-box,
 .is-chart-fullscreen-card .candle-chart-container,
 .is-chart-fullscreen-card .tradingview-chart-container,
 .is-chart-fullscreen-card .market-chart-container {

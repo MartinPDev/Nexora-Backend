@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import ccxt
 
-from app import asset_bot_engine as engine
+from app import bot3 as engine
 from app import asset_bot_supervisor as supervisor
 from app.core.json_store import load_json, save_json
 

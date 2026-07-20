@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from app.core.database import get_db
 from app.core.security import hash_password, verify_password, create_access_token
+from app.eligibility import is_eligible_adult
 from app.models.user import User
 from app.schemas.user import UserCreate, UserOut
 from app.schemas.auth import LoginRequest, TokenResponse
@@ -12,6 +13,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/register", response_model=UserOut)
 def register(payload: UserCreate, db: Session = Depends(get_db)):
+    if not is_eligible_adult(payload.date_of_birth):
+        raise HTTPException(
+            status_code=403,
+            detail="Nexora accounts require users to be 18 or older",
+        )
+
     exists = db.query(User).filter(
         or_(User.email == payload.email, User.username == payload.username)
     ).first()
