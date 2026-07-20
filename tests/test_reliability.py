@@ -136,6 +136,26 @@ class AssetBotReliabilityTests(unittest.TestCase):
         self.assertEqual(price, 123.45)
         self.assertEqual(exchange.fetch_ticker.call_count, 3)
 
+    def test_manual_close_does_not_wait_for_strategy_exit(self):
+        position = {
+            "username": "beta-user",
+            "bot_id": "bot-1",
+            "bot_name": "BTC Bot",
+            "symbol": "BTC/USD",
+            "entry_price": 100.0,
+            "amount": 1.0,
+            "opened_at": "2026-01-01T00:00:00+00:00",
+        }
+        save_json(self.paths["POSITIONS_FILE"], {"beta-user:bot-1": position})
+
+        with patch.object(engine, "fetch_price", return_value=105.0):
+            trade = engine.close_existing_paper_position("beta-user", "bot-1")
+
+        self.assertEqual(trade["reason"], "MANUAL_CLOSE")
+        self.assertEqual(trade["exit_price"], 105.0)
+        self.assertEqual(load_json(self.paths["POSITIONS_FILE"], {}), {})
+        self.assertEqual(len(load_json(self.paths["TRADES_FILE"], [])), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

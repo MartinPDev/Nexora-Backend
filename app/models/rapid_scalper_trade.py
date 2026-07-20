@@ -11,6 +11,7 @@ class RapidScalperTrade(Base):
     __tablename__ = "rapid_scalper_trades"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    username: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
 
     symbol: Mapped[str] = mapped_column(String, index=True)
     side: Mapped[str] = mapped_column(String)
@@ -21,9 +22,20 @@ class RapidScalperTrade(Base):
     status: Mapped[str] = mapped_column(String, default="preview_ready")
 
     entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    current_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gross_pnl_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gross_pnl_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     pnl_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     pnl_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    data_quality: Mapped[str | None] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_price_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

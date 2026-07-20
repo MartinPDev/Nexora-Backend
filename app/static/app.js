@@ -13,7 +13,7 @@ const savedUser = localStorage.getItem("bot_username");
             window.location.href = "/login";
        }
 
-async function createRapidScalperPreview() {
+async function createRapidScalperPreviewLegacy() {
     const payload = {
         symbol: document.getElementById("scalper_symbol").value,
         side: document.getElementById("scalper_side").value,
@@ -26,7 +26,7 @@ async function createRapidScalperPreview() {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
-            "x-plan": "elite"
+            "x-session-token": savedToken
         },
         body: JSON.stringify(payload)
     });
@@ -45,7 +45,7 @@ async function createRapidScalperPreview() {
     loadRapidScalperHistory();
 }
 
-    async function runRapidScalperPaper() {
+    async function runRapidScalperPaperLegacy() {
         const payload = {
             symbol: document.getElementById("scalper_symbol").value,
             side: document.getElementById("scalper_side").value,
@@ -58,7 +58,7 @@ async function createRapidScalperPreview() {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "x-plan": "elite"
+                "x-session-token": savedToken
             },
             body: JSON.stringify(payload)
         });
@@ -79,11 +79,11 @@ async function createRapidScalperPreview() {
     }
 
 
-    async function loadRapidScalperHistory() {
+    async function loadRapidScalperHistoryLegacy() {
         try {
             const res = await fetch("/elite/rapid-scalper/history", {
                 headers: {
-                    "x-plan": "elite"
+                    "x-session-token": savedToken
                 }
             });
 

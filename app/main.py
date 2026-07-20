@@ -14,11 +14,22 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Literal
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from app.core.database import get_db
+from app.core.database import SessionLocal, engine, get_db
 from app.core.json_store import load_json as load_json_file, save_json as save_json_file
 from app.reliability import health_snapshot
 from app.models.rapid_scalper_trade import RapidScalperTrade
+from app.rapid_scalper_service import (
+    MODE_STOP_PERCENT,
+    PAPER_DURATION_SECONDS,
+    TOTAL_COST_RATE,
+    open_paper_trade,
+    remaining_seconds,
+    update_and_maybe_close,
+    utc_now,
+)
 from fastapi.staticfiles import StaticFiles
 
 
@@ -84,13 +95,23 @@ from fastapi.staticfiles import StaticFiles
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-def require_elite_access(x_plan: str = Header(None)):
-    if x_plan != "elite":
+def require_elite_access(x_session_token: str = Header(None)):
+    username = SESSIONS.get(x_session_token or "")
+    if not username:
+        raise HTTPException(status_code=401, detail="Authenticated session required.")
+    billing = get_user_billing(username)
+    plan = str(billing.get("plan", "")).lower()
+    features = billing.get("features", {})
+    has_elite_access = (
+        billing.get("subscription_status") == "active"
+        and (plan in {"elite", "premium"} or int(features.get("max_positions", 0)) >= 15)
+    )
+    if not has_elite_access:
         raise HTTPException(
             status_code=403,
             detail="Elite membership required."
         )
-    return True
+    return username
 
 class RapidScalperRequest(BaseModel):
     symbol: str
@@ -101,6 +122,7 @@ class RapidScalperRequest(BaseModel):
 
 
 class RapidScalperResponse(BaseModel):
+    id: str | None = None
     status: str
     message: str
     symbol: str
@@ -113,6 +135,18 @@ class RapidScalperResponse(BaseModel):
     exit_price: float | None = None
     pnl_usd: float | None = None
     pnl_percent: float | None = None
+    current_price: float | None = None
+    target_price: float | None = None
+    stop_price: float | None = None
+    stop_percent: float | None = None
+    gross_pnl_usd: float | None = None
+    gross_pnl_percent: float | None = None
+    estimated_cost_usd: float | None = None
+    remaining_seconds: int = 0
+    exit_reason: str | None = None
+    data_quality: str | None = None
+    last_price_at: str | None = None
+    closed_at: str | None = None
 
 class RapidScalperHistoryItem(BaseModel):
     id: str
@@ -127,6 +161,10 @@ class RapidScalperHistoryItem(BaseModel):
     exit_price: float | None = None
     pnl_usd: float | None = None
     pnl_percent: float | None = None
+    gross_pnl_usd: float | None = None
+    estimated_cost_usd: float | None = None
+    exit_reason: str | None = None
+    closed_at: str | None = None
 
 
 app.include_router(strategies_router, prefix="/api/v1")
@@ -315,41 +353,24 @@ def activate_user_plan(username: str, plan: str):
 
     return billing[username]
 
-@app.post("/elite/rapid-scalper/preview", response_model=RapidScalperResponse)
-def rapid_scalper_preview(
-    request: RapidScalperRequest,
-    elite_access: bool = Depends(require_elite_access),
-    db: Session = Depends(get_db)
-):
+def validate_scalper_request(request: RapidScalperRequest):
     allowed_symbols = ["BTC/USD", "ETH/USD", "XRP/USD", "SOL/USD", "ADA/USD", "DOGE/USD"]
-
     if request.symbol not in allowed_symbols:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported symbol. Allowed symbols: {allowed_symbols}"
         )
-
     if request.amount_usd < 5:
-        raise HTTPException(
-            status_code=400,
-            detail="Minimum Rapid Scalper amount is $5."
-        )
+        raise HTTPException(status_code=400, detail="Minimum paper amount is $5.")
+    if request.amount_usd > 100_000:
+        raise HTTPException(status_code=400, detail="Paper amount exceeds the simulation limit.")
 
-    trade = RapidScalperTrade(
-        symbol=request.symbol,
-        side=request.side,
-        amount_usd=request.amount_usd,
-        scalp_target_percent=request.scalp_target_percent,
-        mode=request.mode
-    )
 
-    db.add(trade)
-    db.commit()
-    db.refresh(trade)
-
+def scalper_response(trade, message="Paper position status updated."):
     return RapidScalperResponse(
+        id=trade.id,
         status=trade.status,
-        message="Rapid Scalper setup created and saved.",
+        message=message,
         symbol=trade.symbol,
         side=trade.side,
         amount_usd=trade.amount_usd,
@@ -357,9 +378,47 @@ def rapid_scalper_preview(
         mode=trade.mode,
         created_at=trade.created_at.isoformat(),
         entry_price=trade.entry_price,
+        current_price=trade.current_price,
+        target_price=trade.target_price,
+        stop_price=trade.stop_price,
+        stop_percent=trade.stop_percent,
         exit_price=trade.exit_price,
+        gross_pnl_usd=trade.gross_pnl_usd,
+        gross_pnl_percent=trade.gross_pnl_percent,
+        estimated_cost_usd=trade.estimated_cost_usd,
         pnl_usd=trade.pnl_usd,
-        pnl_percent=trade.pnl_percent
+        pnl_percent=trade.pnl_percent,
+        remaining_seconds=remaining_seconds(trade),
+        exit_reason=trade.exit_reason,
+        data_quality=trade.data_quality,
+        last_price_at=trade.last_price_at.isoformat() if trade.last_price_at else None,
+        closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
+    )
+
+
+@app.post("/elite/rapid-scalper/preview", response_model=RapidScalperResponse)
+def rapid_scalper_preview(
+    request: RapidScalperRequest,
+    username: str = Depends(require_elite_access),
+):
+    validate_scalper_request(request)
+    stop_percent = MODE_STOP_PERCENT[request.mode]
+    return RapidScalperResponse(
+        status="preview_ready",
+        message=(
+            f"45-second paper preview. Estimated round-trip costs: "
+            f"{TOTAL_COST_RATE * 100:.2f}% (${request.amount_usd * TOTAL_COST_RATE:.2f})."
+        ),
+        symbol=request.symbol,
+        side=request.side,
+        amount_usd=request.amount_usd,
+        scalp_target_percent=request.scalp_target_percent,
+        mode=request.mode,
+        created_at=utc_now().isoformat(),
+        stop_percent=stop_percent,
+        estimated_cost_usd=request.amount_usd * TOTAL_COST_RATE,
+        remaining_seconds=PAPER_DURATION_SECONDS,
+        data_quality="preview",
     )
 
 MARKET_PRICE_CACHE = {}
@@ -467,80 +526,85 @@ def get_live_market_price(symbol: str):
 @app.post("/elite/rapid-scalper/run-paper", response_model=RapidScalperResponse)
 def rapid_scalper_run_paper(
     request: RapidScalperRequest,
-    elite_access: bool = Depends(require_elite_access),
+    username: str = Depends(require_elite_access),
     db: Session = Depends(get_db)
 ):
-    allowed_symbols = ["BTC/USD", "ETH/USD", "XRP/USD", "SOL/USD", "ADA/USD", "DOGE/USD"]
+    validate_scalper_request(request)
+    active = db.query(RapidScalperTrade).filter(
+        RapidScalperTrade.username == username,
+        RapidScalperTrade.status == "paper_running",
+    ).first()
+    if active:
+        raise HTTPException(status_code=409, detail="A paper scalp is already running.")
 
-    if request.symbol not in allowed_symbols:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported symbol. Allowed symbols: {allowed_symbols}"
-        )
-
-    if request.amount_usd < 5:
-        raise HTTPException(
-            status_code=400,
-            detail="Minimum Rapid Scalper amount is $5."
-        )
-
-    exchange = ccxt.kraken({
-        "enableRateLimit": True
-    })
-
-    ticker = exchange.fetch_ticker(request.symbol)
-    entry_price = float(ticker["last"])
-
-    if request.side == "buy":
-        exit_price = entry_price * (1 + (request.scalp_target_percent / 100))
-        pnl_percent = request.scalp_target_percent
-    else:
-        exit_price = entry_price * (1 - (request.scalp_target_percent / 100))
-        pnl_percent = request.scalp_target_percent
-
-    pnl_usd = request.amount_usd * (pnl_percent / 100)
+    live = get_live_market_price(request.symbol.replace("/", "-"))
+    entry_price = float(live.get("price") or 0)
+    if entry_price <= 0:
+        raise HTTPException(status_code=503, detail="A fresh Kraken price is unavailable.")
 
     trade = RapidScalperTrade(
+        username=username,
         symbol=request.symbol,
         side=request.side,
         amount_usd=request.amount_usd,
         scalp_target_percent=request.scalp_target_percent,
         mode=request.mode,
-        status="paper_executed",
-        entry_price=entry_price,
-        exit_price=exit_price,
-        pnl_usd=pnl_usd,
-        pnl_percent=pnl_percent,
-        closed_at=datetime.utcnow()
     )
+    open_paper_trade(trade, entry_price)
 
     db.add(trade)
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A paper scalp is already running.") from error
+    db.refresh(trade)
+    return scalper_response(trade, "Paper position opened using the current Kraken price.")
+
+
+@app.get("/elite/rapid-scalper/active", response_model=RapidScalperResponse | None)
+def rapid_scalper_active(
+    username: str = Depends(require_elite_access),
+    db: Session = Depends(get_db),
+):
+    trade = db.query(RapidScalperTrade).filter(
+        RapidScalperTrade.username == username,
+    ).order_by(RapidScalperTrade.created_at.desc()).first()
+    if not trade:
+        return None
+
+    if trade.status != "paper_running":
+        return scalper_response(trade)
+
+    try:
+        live = get_live_market_price(trade.symbol.replace("/", "-"))
+        current_price = float(live.get("price") or 0)
+        if current_price <= 0:
+            raise ValueError("missing live price")
+        update_and_maybe_close(trade, current_price)
+        trade.data_quality = "live"
+    except Exception:
+        trade.data_quality = "delayed"
+        if utc_now() >= trade.expires_at and trade.current_price:
+            update_and_maybe_close(trade, float(trade.current_price))
+            trade.exit_reason = "MAX_DURATION_DELAYED_PRICE"
+
     db.commit()
     db.refresh(trade)
-
-    return RapidScalperResponse(
-        status=trade.status,
-        message="Rapid Scalper paper trade executed and saved.",
-        symbol=trade.symbol,
-        side=trade.side,
-        amount_usd=trade.amount_usd,
-        scalp_target_percent=trade.scalp_target_percent,
-        mode=trade.mode,
-        created_at=trade.created_at.isoformat(),
-        entry_price=trade.entry_price,
-        exit_price=trade.exit_price,
-        pnl_usd=trade.pnl_usd,
-        pnl_percent=trade.pnl_percent
-    )
+    return scalper_response(trade)
 
 
 @app.get("/elite/rapid-scalper/history", response_model=list[RapidScalperHistoryItem])
 def rapid_scalper_history(
-    elite_access: bool = Depends(require_elite_access),
+    username: str = Depends(require_elite_access),
     db: Session = Depends(get_db)
 ):
     trades = (
         db.query(RapidScalperTrade)
+        .filter(
+            RapidScalperTrade.username == username,
+            RapidScalperTrade.status == "paper_closed",
+        )
         .order_by(RapidScalperTrade.created_at.desc())
         .limit(50)
         .all()
@@ -558,16 +622,83 @@ def rapid_scalper_history(
             created_at=trade.created_at.isoformat(),
             entry_price=trade.entry_price,
             exit_price=trade.exit_price,
+            gross_pnl_usd=trade.gross_pnl_usd,
+            estimated_cost_usd=trade.estimated_cost_usd,
             pnl_usd=trade.pnl_usd,
-            pnl_percent=trade.pnl_percent
+            pnl_percent=trade.pnl_percent,
+            exit_reason=trade.exit_reason,
+            closed_at=trade.closed_at.isoformat() if trade.closed_at else None,
         )
         for trade in trades
     ]
 
 
+def migrate_rapid_scalper_schema():
+    """Idempotently add lifecycle fields for existing installations."""
+    RapidScalperTrade.__table__.create(bind=engine, checkfirst=True)
+    existing = {column["name"] for column in inspect(engine).get_columns("rapid_scalper_trades")}
+    additions = {
+        "username": "VARCHAR",
+        "current_price": "FLOAT",
+        "target_price": "FLOAT",
+        "stop_price": "FLOAT",
+        "stop_percent": "FLOAT",
+        "gross_pnl_usd": "FLOAT",
+        "gross_pnl_percent": "FLOAT",
+        "estimated_cost_usd": "FLOAT",
+        "exit_reason": "VARCHAR",
+        "data_quality": "VARCHAR",
+        "expires_at": "TIMESTAMP",
+        "last_price_at": "TIMESTAMP",
+    }
+    with engine.begin() as connection:
+        for column_name, column_type in additions.items():
+            if column_name not in existing:
+                connection.execute(text(
+                    f"ALTER TABLE rapid_scalper_trades ADD COLUMN {column_name} {column_type}"
+                ))
+        connection.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_scalper_running_user "
+            "ON rapid_scalper_trades (username) WHERE status = 'paper_running'"
+        ))
+
+
+def rapid_scalper_settlement_loop():
+    """Keep paper positions moving even when the dashboard is closed."""
+    while True:
+        cycle_started = time.monotonic()
+        db = SessionLocal()
+        try:
+            trades = db.query(RapidScalperTrade).filter(
+                RapidScalperTrade.status == "paper_running"
+            ).all()
+            for trade in trades:
+                try:
+                    live = get_live_market_price(trade.symbol.replace("/", "-"))
+                    current_price = float(live.get("price") or 0)
+                    if current_price <= 0:
+                        raise ValueError("missing live price")
+                    update_and_maybe_close(trade, current_price)
+                    trade.data_quality = "live"
+                except Exception:
+                    trade.data_quality = "delayed"
+                    if utc_now() >= trade.expires_at and trade.current_price:
+                        update_and_maybe_close(trade, float(trade.current_price))
+                        trade.exit_reason = "MAX_DURATION_DELAYED_PRICE"
+            db.commit()
+        except Exception as error:
+            db.rollback()
+            print(f"Rapid Scalper settlement cycle failed: {type(error).__name__}: {error}")
+        finally:
+            db.close()
+        elapsed = time.monotonic() - cycle_started
+        time.sleep(max(0.25, 1.0 - elapsed))
+
+
 @app.on_event("startup")
 def startup():
     init_users_db()
+    migrate_rapid_scalper_schema()
     from app.asset_bot_supervisor import start_asset_bot_supervisor
 
     start_asset_bot_supervisor()
@@ -577,6 +708,13 @@ def startup():
         daemon=True
     )
     market_price_thread.start()
+
+    scalper_thread = threading.Thread(
+        target=rapid_scalper_settlement_loop,
+        name="rapid-scalper-paper-settlement",
+        daemon=True,
+    )
+    scalper_thread.start()
 
 @app.get("/health")
 def health_check():
@@ -658,26 +796,11 @@ def get_asset_bot_positions(username: str):
 
 @app.post("/asset-bot-close-position/{username}/{bot_id}")
 def close_asset_bot_position(username: str, bot_id: str):
-    from app.asset_bot_engine import (
-        fetch_price,
-        get_existing_position,
-        close_paper_position
-    )
+    from app.asset_bot_engine import close_existing_paper_position
 
-    position = get_existing_position(username, bot_id)
-
-    if not position:
-        return {
-            "error": "No open position found for this bot"
-        }
-
-    price = fetch_price(position["symbol"])
-
-    trade = close_paper_position(
-        position,
-        price,
-        "MANUAL_CLOSE"
-    )
+    trade = close_existing_paper_position(username, bot_id)
+    if not trade:
+        raise HTTPException(status_code=404, detail="No open paper position found for this bot")
 
     bots = load_bots()
     user_bots = bots.get(username, [])
@@ -687,7 +810,7 @@ def close_asset_bot_position(username: str, bot_id: str):
             bot["enabled"] = False
             bot["status"] = "paused"
             bot["current_open_positions"] = 0
-            bot["last_action"] = "Closed manually - paused"
+            bot["last_action"] = "Closed manually - paused to prevent automatic re-entry"
             bot["last_scan"] = datetime.now().isoformat()
             save_bots(bots)
             break
@@ -2268,7 +2391,13 @@ def dashboard_ui(username: str):
          Stop Auto Bot
     </button>
 
-    <button onclick="openDashboardBotInfo()" style="background:#38bdf8;color:white;">i</button>
+    <button
+        type="button"
+        onclick="openDashboardBotInfo()"
+        aria-label="Open the beginner guide for the Auto Opportunity Bot"
+        title="Auto Opportunity Bot beginner guide"
+        style="width:30px;height:30px;border:0;border-radius:50%;background:#38bdf8;color:white;font-weight:900;cursor:pointer;"
+    >i</button>
 
 </div>
 
@@ -2410,7 +2539,16 @@ def dashboard_ui(username: str):
 
 
     <div class="card">
-        <h2>Asset-Specific Bots</h2>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <h2 style="margin:0;">Asset-Specific Bots</h2>
+            <button
+                type="button"
+                onclick="openAssetSpecificInfo()"
+                aria-label="Open the beginner guide for Asset-Specific Bots"
+                title="Beginner guide"
+                style="width:30px;height:30px;border:0;border-radius:50%;background:#38bdf8;color:white;font-weight:900;cursor:pointer;"
+            >i</button>
+        </div>
 
         <p style="color:#94a3b8;margin-top:-5px;margin-bottom:15px;">
             Create bots tied to a specific trading pair. These bots are dedicated to the market you select and are separate from the Auto Opportunity Bot.
@@ -2853,35 +2991,14 @@ def dashboard_ui(username: str):
     </button>
 
     <button
+        id="rapid_scalper_start_button"
         onclick="runRapidScalperPaper()"
         style="margin-top:10px; padding:10px; border-radius:8px; background:#22c55e; color:white; font-weight:bold;"
     >
-        Run Paper Trade
+        Start 45s Paper Simulation
     </button>
 
     <div id="rapid_scalper_message" style="margin-top:12px; color:#94a3b8;"></div>
-
-
-
-        <div style="margin-top:14px; display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px;">
-            <div>
-                <div style="font-size:12px; color:#94a3b8;">Amount</div>
-                <div id="active_scalper_amount" style="font-weight:700;">$25.00</div>
-            </div>
-            <div>
-                <div style="font-size:12px; color:#94a3b8;">Target</div>
-                <div id="active_scalper_target" style="font-weight:700;">0.50%</div>
-            </div>
-            <div>
-                <div style="font-size:12px; color:#94a3b8;">Mode</div>
-                <div id="active_scalper_mode" style="font-weight:700;">conservative</div>
-            </div>
-            <div>
-                <div style="font-size:12px; color:#94a3b8;">Timer</div>
-                <div id="active_scalper_timer" style="font-size:22px; font-weight:900; color:#22c55e;">45s</div>
-            </div>
-        </div>
-    </div>
 
     <div id="rapid_scalper_active_trade" style="display:none; margin-top:15px; padding:18px; border-radius:16px; background:#020617; border:1px solid #22c55e; color:#e5e7eb;">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
@@ -2912,6 +3029,10 @@ def dashboard_ui(username: str):
                 <div id="active_scalper_target" style="font-size:17px; font-weight:800;">0.50%</div>
             </div>
             <div>
+                <div style="font-size:12px; color:#94a3b8;">Protective Boundary</div>
+                <div id="active_scalper_stop" style="font-size:17px; font-weight:800;">--</div>
+            </div>
+            <div>
                 <div style="font-size:12px; color:#94a3b8;">Mode</div>
                 <div id="active_scalper_mode" style="font-size:17px; font-weight:800;">conservative</div>
             </div>
@@ -2922,8 +3043,10 @@ def dashboard_ui(username: str):
         </div>
 
         <div style="margin-top:18px; padding:14px; border-radius:12px; background:#0f172a; border:1px solid #1e293b;">
-            <div style="font-size:12px; color:#94a3b8;">Live Profit / Loss</div>
+            <div style="font-size:12px; color:#94a3b8;">Estimated Net Paper Result</div>
             <div id="active_scalper_pnl" style="font-size:28px; font-weight:950; color:#22c55e;">$0.00 / 0.00%</div>
+            <div id="active_scalper_costs" style="margin-top:5px;font-size:12px;color:#94a3b8;">Gross $0.00 • estimated costs $0.00</div>
+            <div id="active_scalper_freshness" style="margin-top:5px;font-size:12px;color:#94a3b8;">Waiting for Kraken price…</div>
         </div>
     </div>
 
@@ -3144,7 +3267,7 @@ def dashboard_ui(username: str):
             window.location.href = "/login";
        }}
 
-async function createRapidScalperPreview() {{
+async function createRapidScalperPreviewLegacy() {{
     const payload = {{
         symbol: document.getElementById("scalper_symbol").value,
         side: document.getElementById("scalper_side").value,
@@ -3157,7 +3280,7 @@ async function createRapidScalperPreview() {{
         method: "POST",
         headers: {{
             "Content-Type": "application/json",
-            "x-plan": "elite"
+            "x-session-token": savedToken
         }},
         body: JSON.stringify(payload)
     }});
@@ -3177,7 +3300,7 @@ async function createRapidScalperPreview() {{
 }}
 
     let rapidScalperTimer = null;
-    async function runRapidScalperPaper() {{
+    async function runRapidScalperPaperLegacy() {{
         const payload = {{
             symbol: document.getElementById("scalper_symbol").value,
             side: document.getElementById("scalper_side").value,
@@ -3223,7 +3346,7 @@ async function createRapidScalperPreview() {{
             method: "POST",
             headers: {{
                 "Content-Type": "application/json",
-                "x-plan": "elite"
+                "x-session-token": savedToken
             }},
             body: JSON.stringify(payload)
         }});
@@ -3265,7 +3388,9 @@ async function createRapidScalperPreview() {{
             secondsLeft -= 1;
 
             try {{
-                const priceRes = await fetch("/market/live-price/" + priceSymbol);
+                const priceRes = await fetch("/market/live-price/" + priceSymbol, {{
+                    cache: "no-store"
+                }});
                 const priceData = await priceRes.json();
 
                 if (priceRes.ok && priceData.price) {{
@@ -3307,11 +3432,11 @@ async function createRapidScalperPreview() {{
         }}, 1000);
     }}
 
-    async function loadRapidScalperHistory() {{
+    async function loadRapidScalperHistoryLegacy() {{
         try {{
             const res = await fetch("/elite/rapid-scalper/history", {{
                 headers: {{
-                    "x-plan": "elite"
+                    "x-session-token": savedToken
                 }}
             }});
 
@@ -3366,6 +3491,140 @@ async function createRapidScalperPreview() {{
         }} catch (err) {{
             console.error(err);
             document.getElementById("rapid_scalper_history").innerText = "Failed to load.";
+        }}
+    }}
+
+    function rapidScalperHeaders(includeJson = false) {{
+        const headers = {{"x-session-token": savedToken}};
+        if (includeJson) headers["Content-Type"] = "application/json";
+        return headers;
+    }}
+
+    function rapidScalperPayload() {{
+        return {{
+            symbol: document.getElementById("scalper_symbol").value,
+            side: document.getElementById("scalper_side").value,
+            amount_usd: parseFloat(document.getElementById("scalper_amount").value),
+            scalp_target_percent: parseFloat(document.getElementById("scalper_target").value),
+            mode: document.getElementById("scalper_mode").value
+        }};
+    }}
+
+    function renderRapidScalper(data) {{
+        if (!data) return;
+        const activeBox = document.getElementById("rapid_scalper_active_trade");
+        const startButton = document.getElementById("rapid_scalper_start_button");
+        const running = data.status === "paper_running";
+        const net = Number(data.pnl_usd || 0);
+        const netPercent = Number(data.pnl_percent || 0);
+        const gross = Number(data.gross_pnl_usd || 0);
+        const costs = Number(data.estimated_cost_usd || 0);
+        const color = net >= 0 ? "#22c55e" : "#ef4444";
+        const prefix = net >= 0 ? "+" : "";
+
+        activeBox.style.display = "block";
+        document.getElementById("active_scalper_title").innerText = data.symbol + " " + data.side.toUpperCase();
+        document.getElementById("active_scalper_amount").innerText = "$" + Number(data.amount_usd || 0).toFixed(2);
+        document.getElementById("active_scalper_entry").innerText = "$" + Number(data.entry_price || 0).toFixed(6);
+        document.getElementById("active_scalper_current").innerText = "$" + Number(data.current_price || data.entry_price || 0).toFixed(6);
+        document.getElementById("active_scalper_target").innerText = "$" + Number(data.target_price || 0).toFixed(6) + " (" + Number(data.scalp_target_percent || 0).toFixed(2) + "%)";
+        document.getElementById("active_scalper_stop").innerText = "$" + Number(data.stop_price || 0).toFixed(6) + " (" + Number(data.stop_percent || 0).toFixed(2) + "%)";
+        document.getElementById("active_scalper_mode").innerText = data.mode;
+        document.getElementById("active_scalper_timer").innerText = running ? Number(data.remaining_seconds || 0) + "s" : "Closed";
+        document.getElementById("active_scalper_timer").style.color = color;
+        document.getElementById("active_scalper_pnl").innerText = prefix + "$" + net.toFixed(2) + " / " + prefix + netPercent.toFixed(2) + "%";
+        document.getElementById("active_scalper_pnl").style.color = color;
+        document.getElementById("active_scalper_costs").innerText = "Gross " + (gross >= 0 ? "+" : "") + "$" + gross.toFixed(2) + " • estimated costs $" + costs.toFixed(2);
+        document.getElementById("active_scalper_freshness").innerText = (data.data_quality === "live" ? "Kraken price current" : "Price delayed") + (data.last_price_at ? " • " + new Date(data.last_price_at).toLocaleTimeString() : "");
+
+        const status = document.getElementById("active_scalper_status");
+        status.innerText = running ? "PAPER RUNNING" : (data.exit_reason || "PAPER CLOSED").replaceAll("_", " ");
+        status.style.background = running ? "#14532d" : (net >= 0 ? "#14532d" : "#7f1d1d");
+        status.style.color = running || net >= 0 ? "#86efac" : "#fecaca";
+        startButton.disabled = running;
+        startButton.style.opacity = running ? "0.55" : "1";
+        startButton.innerText = running ? "Paper Simulation Running…" : "Start 45s Paper Simulation";
+    }}
+
+    async function refreshRapidScalperActive() {{
+        if (rapidScalperTimer) clearTimeout(rapidScalperTimer);
+        try {{
+            const res = await fetch("/elite/rapid-scalper/active", {{
+                headers: rapidScalperHeaders(),
+                cache: "no-store"
+            }});
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || "Unable to refresh paper position");
+            if (!data) {{
+                document.getElementById("rapid_scalper_start_button").disabled = false;
+                return;
+            }}
+            renderRapidScalper(data);
+            if (data.status === "paper_running") {{
+                rapidScalperTimer = setTimeout(refreshRapidScalperActive, 1000);
+            }} else {{
+                await loadRapidScalperHistory();
+            }}
+        }} catch (error) {{
+            document.getElementById("active_scalper_freshness").innerText = error.message;
+            rapidScalperTimer = setTimeout(refreshRapidScalperActive, 3000);
+        }}
+    }}
+
+    async function createRapidScalperPreview() {{
+        const res = await fetch("/elite/rapid-scalper/preview", {{
+            method: "POST",
+            headers: rapidScalperHeaders(true),
+            body: JSON.stringify(rapidScalperPayload())
+        }});
+        const data = await res.json();
+        const message = document.getElementById("rapid_scalper_message");
+        message.innerText = res.ok ? data.message : (data.detail || "Preview unavailable");
+        message.style.color = res.ok ? "#86efac" : "#fca5a5";
+    }}
+
+    async function runRapidScalperPaper() {{
+        const button = document.getElementById("rapid_scalper_start_button");
+        button.disabled = true;
+        button.innerText = "Opening Paper Simulation…";
+        const res = await fetch("/elite/rapid-scalper/run-paper", {{
+            method: "POST",
+            headers: rapidScalperHeaders(true),
+            body: JSON.stringify(rapidScalperPayload())
+        }});
+        const data = await res.json();
+        if (!res.ok) {{
+            document.getElementById("rapid_scalper_message").innerText = data.detail || "Paper simulation could not start";
+            button.disabled = false;
+            button.innerText = "Start 45s Paper Simulation";
+            if (res.status === 409) refreshRapidScalperActive();
+            return;
+        }}
+        renderRapidScalper(data);
+        refreshRapidScalperActive();
+    }}
+
+    async function loadRapidScalperHistory() {{
+        const box = document.getElementById("rapid_scalper_history");
+        try {{
+            const res = await fetch("/elite/rapid-scalper/history", {{headers: rapidScalperHeaders(), cache: "no-store"}});
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || "History unavailable");
+            if (!data.length) {{
+                box.innerText = "No completed paper simulations yet.";
+                return;
+            }}
+            box.innerHTML = data.map(item => {{
+                const net = Number(item.pnl_usd || 0);
+                const color = net >= 0 ? "#22c55e" : "#ef4444";
+                return `<div style="padding:12px;border:1px solid #334155;border-radius:10px;margin-bottom:8px;background:#020617;">
+                    <div style="display:flex;justify-content:space-between;gap:10px;"><strong>${{item.symbol}} ${{item.side.toUpperCase()}}</strong><strong style="color:${{color}};">${{net >= 0 ? '+' : ''}}$${{net.toFixed(2)}}</strong></div>
+                    <div style="margin-top:5px;color:#94a3b8;font-size:13px;">${{(item.exit_reason || item.status).replaceAll('_', ' ')}} • gross $${{Number(item.gross_pnl_usd || 0).toFixed(2)}} • costs $${{Number(item.estimated_cost_usd || 0).toFixed(2)}}</div>
+                    <div style="margin-top:4px;color:#64748b;font-size:12px;">${{new Date(item.closed_at || item.created_at).toLocaleString()}}</div>
+                </div>`;
+            }}).join("");
+        }} catch (error) {{
+            box.innerText = error.message;
         }}
     }}
 
@@ -3949,15 +4208,16 @@ async function loadEquityChart() {{
                     positionsCell.innerText = String(bot.current_open_positions || 0) + " / " + String(bot.max_open_positions || 0);
                 }}
 
+                const position = positions.find(item => item.bot_id === bot.id);
+
                 if (closeButton) {{
-                    closeButton.style.display = Number(bot.current_open_positions || 0) > 0 ? "block" : "none";
+                    closeButton.style.display = position ? "block" : "none";
                 }}
 
                 if (statusCell) {{
                     statusCell.innerText = bot.enabled === false ? "Paused" : "Active";
                 }}
 
-                const position = positions.find(item => item.bot_id === bot.id);
                 if (!position) {{
                     const pnlCell = document.getElementById("bot_change_usd_" + bot.id);
                     const pnlPercentCell = document.getElementById("bot_change_percent_" + bot.id);
@@ -4065,7 +4325,8 @@ async function loadEquityChart() {{
                 changePercentText = "-";
             }}
 
-            const closePositionDisplay = Number(bot.current_open_positions || 0) > 0 ? "block" : "none";
+            const openPosition = positions.find(item => item.bot_id === bot.id);
+            const closePositionDisplay = openPosition ? "block" : "none";
 
             row.innerHTML = `
                 <td>${{bot.name}}</td>
@@ -4289,8 +4550,8 @@ async function loadEquityChart() {{
 
         const data = await res.json();
 
-        if (data.error) {{
-            alert(data.error);
+        if (!res.ok || data.error || data.detail) {{
+            alert(data.detail || data.error || "Unable to close this paper position");
             return;
         }}
 
@@ -4335,6 +4596,13 @@ async function loadEquityChart() {{
                 <p><strong>Unrealized PnL:</strong> $${{pnl.toFixed(2)}} (${{pnlPercent.toFixed(2)}}%)</p>
                 <p><strong>Opened At:</strong> ${{position.opened_at || "-"}}</p>
                 <p><strong>Last Checked:</strong> ${{position.last_checked_at || "Not checked yet"}}</p>
+                <button
+                    type="button"
+                    onclick="closePosition('${{botId}}')"
+                    style="margin-top:10px;padding:9px 14px;border:0;border-radius:7px;background:#22c55e;color:white;cursor:pointer;"
+                >
+                    Close paper position now
+                </button>
             `;
         }}
 
@@ -4578,6 +4846,7 @@ async function loadEquityChart() {{
         const modal = document.getElementById("dashboardBotInfoModal");
         if (modal) {{
             modal.style.display = "flex";
+            modal.querySelector("button").focus();
         }}
     }}
 
@@ -4587,6 +4856,26 @@ async function loadEquityChart() {{
             modal.style.display = "none";
         }}
     }}
+
+    function openAssetSpecificInfo() {{
+        const modal = document.getElementById("assetSpecificInfoModal");
+        if (modal) {{
+            modal.style.display = "flex";
+            modal.querySelector("button").focus();
+        }}
+    }}
+
+    function closeAssetSpecificInfo() {{
+        const modal = document.getElementById("assetSpecificInfoModal");
+        if (modal) modal.style.display = "none";
+    }}
+
+    document.addEventListener("keydown", function(event) {{
+        if (event.key === "Escape") {{
+            closeAssetSpecificInfo();
+            closeDashboardBotInfo();
+        }}
+    }});
 
     function openStrategyInfo() {{
         document.getElementById("strategyInfoModal").style.display = "flex";
@@ -4618,6 +4907,8 @@ async function loadEquityChart() {{
     loadBilling();
     applyStrategyPreset('balanced');
     loadStrategies();
+    loadRapidScalperHistory();
+    refreshRapidScalperActive();
     // loadLiveMarketPrice();
     restoreBotConsoleState();
     // setInterval(loadLiveMarketPrice, 5000);
@@ -4658,42 +4949,251 @@ async function loadEquityChart() {{
         z-index:9999;
         justify-content:center;
         align-items:center;
-    ">
+        padding:18px;
+    " role="dialog" aria-modal="true" aria-labelledby="autoBotInfoTitle" onclick="if (event.target === this) closeDashboardBotInfo()">
 
         <div style="
             background:#111827;
-            padding:25px;
-            border-radius:12px;
-            max-width:600px;
+            padding:26px;
+            border-radius:16px;
+            max-width:920px;
+            width:100%;
+            max-height:90vh;
+            overflow-y:auto;
             color:white;
+            border:1px solid #334155;
         ">
 
-            <button onclick="closeDashboardBotInfo()" style="float:right;">X</button>
+            <button type="button" onclick="closeDashboardBotInfo()" aria-label="Close Auto Opportunity Bot guide" style="position:sticky;top:0;float:right;border:0;border-radius:8px;background:#ef4444;color:white;padding:8px 12px;font-weight:800;cursor:pointer;z-index:2;">Close</button>
 
-            <h2>How to Use the Bot</h2>
+            <div style="padding-right:80px;">
+                <div style="font-size:12px;color:#38bdf8;font-weight:900;letter-spacing:.12em;text-transform:uppercase;">Beginner guide</div>
+                <h2 id="autoBotInfoTitle" style="margin:7px 0 8px;">Understanding the Auto Opportunity Bot</h2>
+                <p style="color:#cbd5e1;line-height:1.65;margin:0;">The Auto Opportunity Bot is the broad-market automation section. Instead of remaining dedicated to one selected pair, it reads the bot engine's eligible-market feed, displays its current state and manages its paper-mode automation through the Start and Stop controls.</p>
+            </div>
 
-            <h3>1. Start in Paper Mode</h3>
+            <div style="margin-top:18px;padding:14px;border:1px solid #1d4ed8;border-radius:12px;background:rgba(30,64,175,.16);color:#dbeafe;line-height:1.6;">
+                <strong>Paper-mode explanation:</strong> account totals, positions and results described here are simulated. Starting the Auto Bot controls paper automation; it does not mean an exchange order was submitted. Financial accounts and live exchange services are for eligible adults who satisfy the provider's requirements.
+            </div>
 
-            <p>Use Paper mode first. This lets you test the bot with simulated funds before risking real money.</p>
+            <details open style="margin-top:16px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">1. Auto Bot versus Asset-Specific Bots</summary>
+                <div style="overflow-x:auto;margin-top:12px;"><table style="width:100%;min-width:650px;border-collapse:collapse;"><thead><tr><th style="text-align:left;padding:9px;">Auto Opportunity Bot</th><th style="text-align:left;padding:9px;">Asset-Specific Bot</th></tr></thead><tbody style="color:#cbd5e1;"><tr><td style="padding:9px;vertical-align:top;">Uses the broad automation feed and can evaluate eligible markets supported by that engine.</td><td style="padding:9px;vertical-align:top;">Remains attached to one chosen Kraken pair.</td></tr><tr><td style="padding:9px;vertical-align:top;">Controlled by the main Start Auto Bot and Stop Auto Bot buttons.</td><td style="padding:9px;vertical-align:top;">Created, paused, resumed, viewed, closed and deleted from its own row.</td></tr><tr><td style="padding:9px;vertical-align:top;">Uses the main dashboard, settings, console and trade history.</td><td style="padding:9px;vertical-align:top;">Maintains separate per-bot allocation, position state and last action.</td></tr></tbody></table></div>
+            </details>
 
-            <h3>2. Configure Your Settings</h3>
-            <p>Set your risk %, max positions, stop loss, partial take profit, and trailing stop. These control risk, exits, and profit protection.</p>
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">2. What happens after Start Auto Bot?</summary>
+                <ol style="color:#cbd5e1;line-height:1.75;padding-left:22px;margin-bottom:0;">
+                    <li>The control state changes to running.</li>
+                    <li>The dashboard reads the engine's latest market, health and analysis information.</li>
+                    <li>Eligible market observations pass through configured signal and safety filters.</li>
+                    <li>The engine can reject or abstain when requirements are not satisfied.</li>
+                    <li>A simulated position is recorded only when all required paper-entry conditions pass.</li>
+                    <li>Open paper positions are monitored against configured exit boundaries.</li>
+                    <li>Dashboard totals, open trades, history and console information update as state changes.</li>
+                </ol>
+            </details>
 
-            <h3>3. Create or Select a Strategy</h3>
-            <p>The bot uses your strategy rules to decide when a trade setup is strong enough. Strategy settings can include score, AI probability, stop loss, and take profit rules.</p>
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">3. What Start and Stop actually do</summary>
+                <ul style="color:#cbd5e1;line-height:1.75;padding-left:22px;margin-bottom:0;">
+                    <li><strong>Start Auto Bot:</strong> enables the broad paper-automation control.</li>
+                    <li><strong>Stop Auto Bot:</strong> prevents new automated paper entries while the control is stopped.</li>
+                    <li><strong>Status indicator:</strong> shows the control state reported by the backend, not whether a favourable setup currently exists.</li>
+                    <li>Starting the Auto Bot does not guarantee that it will immediately create a paper position.</li>
+                    <li>Stopping automation should not be confused with erasing history or deleting configuration.</li>
+                </ul>
+            </details>
 
-            <h3>4. Start the Bot</h3>
-            <p>Click Start Bot. The bot will scan market data, check indicators, evaluate AI confidence, and look for trades that match your settings.</p>
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">4. Understanding the main dashboard numbers</summary>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:13px;">
+                    <div><strong>Equity</strong><p style="color:#94a3b8;line-height:1.55;">The simulated total value represented by the current dashboard state.</p></div>
+                    <div><strong>Cash</strong><p style="color:#94a3b8;line-height:1.55;">The simulated amount not currently represented by an open paper position.</p></div>
+                    <div><strong>PnL</strong><p style="color:#94a3b8;line-height:1.55;">Paper profit or loss reported by the engine. It is not guaranteed or predictive.</p></div>
+                    <div><strong>Open positions</strong><p style="color:#94a3b8;line-height:1.55;">How many simulated positions are currently recorded as open.</p></div>
+                    <div><strong>Win rate</strong><p style="color:#94a3b8;line-height:1.55;">The proportion of recorded completed simulations marked favourable. Small samples can be misleading.</p></div>
+                    <div><strong>Updated time</strong><p style="color:#94a3b8;line-height:1.55;">When the backend last refreshed the dashboard snapshot.</p></div>
+                </div>
+            </details>
 
-            <h3>5. Monitor Performance</h3>
-            <p>Watch Equity, Cash, PnL, Open Positions, Open Trades, Trade History, Live Bot Console, and Performance Chart to see what the bot is doing.</p>
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">5. Understanding the settings</summary>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-top:13px;">
+                    <div><strong>Risk percentage</strong><p style="color:#94a3b8;line-height:1.55;">A paper exposure control used by the engine's configured position-sizing rules.</p></div>
+                    <div><strong>Maximum positions</strong><p style="color:#94a3b8;line-height:1.55;">The upper limit on simultaneous simulated positions.</p></div>
+                    <div><strong>Stop boundary</strong><p style="color:#94a3b8;line-height:1.55;">A configured paper exit intended to limit an adverse simulated move.</p></div>
+                    <div><strong>Partial take-profit</strong><p style="color:#94a3b8;line-height:1.55;">A paper rule that can record a partial simulated reduction after a configured favourable move.</p></div>
+                    <div><strong>Trailing boundary</strong><p style="color:#94a3b8;line-height:1.55;">A paper exit level that follows a new peak and reacts to a configured pullback.</p></div>
+                    <div><strong>Mode</strong><p style="color:#94a3b8;line-height:1.55;">Shows whether the dashboard is operating with simulated records. This reviewed interface is intended for paper operation.</p></div>
+                </div>
+            </details>
 
-            <h3>6. Stop When Needed</h3>
-            <p>Click Stop Bot to pause automation. This prevents the bot from opening new trades while you review settings or market conditions.</p>
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">6. How to read Open Trades, History and Console</summary>
+                <ul style="color:#cbd5e1;line-height:1.75;padding-left:22px;margin-bottom:0;">
+                    <li><strong>Open Trades:</strong> the engine's currently open simulated positions and their recorded state.</li>
+                    <li><strong>Trade History:</strong> completed paper records, including entry, exit and result information.</li>
+                    <li><strong>Live Bot Console:</strong> human-readable engine messages explaining scans, decisions, errors and state changes.</li>
+                    <li><strong>Performance chart:</strong> a visual history of reported paper equity, not a forecast.</li>
+                    <li>Use timestamps to distinguish current information from an old cached message.</li>
+                </ul>
+            </details>
 
-            <h3>Important</h3>
-            <p>The bot does not guarantee profit. It follows your settings and strategy rules. Market conditions can change quickly, and losses are possible.</p>
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">7. Why the Auto Bot may do nothing</summary>
+                <ul style="color:#cbd5e1;line-height:1.75;padding-left:22px;margin-bottom:0;">
+                    <li>No eligible observation satisfied every required paper-entry condition.</li>
+                    <li>The model abstained because uncertainty, disagreement or unfamiliar conditions were too high.</li>
+                    <li>Market data was stale, incomplete or temporarily unavailable.</li>
+                    <li>A configured position limit or cooldown prevented another paper entry.</li>
+                    <li>The control is stopped or the backend has not produced a fresh scan.</li>
+                    <li>Doing nothing can be an intentional safety outcome rather than a malfunction.</li>
+                </ul>
+            </details>
 
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">8. Beginner troubleshooting</summary>
+                <ul style="color:#cbd5e1;line-height:1.75;padding-left:22px;margin-bottom:0;">
+                    <li>If the status does not change, check the latest console message and backend health.</li>
+                    <li>If prices or totals appear frozen, compare their timestamps and refresh the dashboard.</li>
+                    <li>If no paper position appears, do not assume the bot is broken; first check whether it abstained.</li>
+                    <li>If an error repeats, preserve the timestamp and message so it can be diagnosed.</li>
+                    <li>Do not judge model quality from a few short paper outcomes.</li>
+                </ul>
+            </details>
+
+            <div style="margin-top:16px;padding:14px;border:1px solid #7c2d12;border-radius:12px;background:rgba(124,45,18,.14);color:#fed7aa;line-height:1.6;"><strong>Important:</strong> the Auto Opportunity Bot does not guarantee a favourable result. Market information can be delayed, models can abstain or be wrong, and simulated performance does not establish future performance.</div>
+
+        </div>
+    </div>
+
+    <div
+        id="assetSpecificInfoModal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="assetSpecificInfoTitle"
+        onclick="if (event.target === this) closeAssetSpecificInfo()"
+        style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:10000;justify-content:center;align-items:center;padding:18px;"
+    >
+        <div style="background:#111827;border:1px solid #334155;border-radius:16px;max-width:920px;width:100%;max-height:90vh;overflow-y:auto;color:white;padding:26px;box-shadow:0 24px 80px rgba(0,0,0,.45);">
+            <button
+                type="button"
+                onclick="closeAssetSpecificInfo()"
+                aria-label="Close Asset-Specific Bot guide"
+                style="position:sticky;top:0;float:right;border:0;border-radius:8px;background:#ef4444;color:white;padding:8px 12px;font-weight:800;cursor:pointer;z-index:2;"
+            >Close</button>
+
+            <div style="padding-right:80px;">
+                <div style="font-size:12px;color:#38bdf8;font-weight:900;letter-spacing:.12em;text-transform:uppercase;">Beginner guide</div>
+                <h2 id="assetSpecificInfoTitle" style="margin:7px 0 8px;">Understanding Asset-Specific Bots</h2>
+                <p style="color:#cbd5e1;line-height:1.65;margin:0;">
+                    An Asset-Specific Bot watches one selected Kraken market, such as BTC/USD or XLM/USD. It does not search every market. The bot reads current market data, applies its assigned strategy and AI safety gates, and records its activity separately from the Auto Opportunity Bot.
+                </p>
+            </div>
+
+            <div style="margin-top:18px;padding:14px;border:1px solid #1d4ed8;border-radius:12px;background:rgba(30,64,175,.16);color:#dbeafe;line-height:1.6;">
+                <strong>Paper-mode explanation:</strong> the position, balance and profit/loss values described here are simulated. They are educational records and do not represent an exchange order. Financial accounts and live exchange services are for eligible adults who satisfy the provider's requirements.
+            </div>
+
+            <details open style="margin-top:16px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">1. What happens from start to finish?</summary>
+                <ol style="color:#cbd5e1;line-height:1.75;padding-left:22px;margin-bottom:0;">
+                    <li>You create a bot with a name, one market, an assigned strategy and a paper allocation.</li>
+                    <li>The supervisor checks enabled bots on a repeating schedule.</li>
+                    <li>Market candles are converted into indicators and market-regime information.</li>
+                    <li>The model either validates the setup or abstains when data quality or uncertainty is unacceptable.</li>
+                    <li>If every required paper-entry gate passes, one simulated position is recorded.</li>
+                    <li>Current Kraken prices update its simulated value and unrealized profit/loss.</li>
+                    <li>The position can be closed by its paper exit rules or immediately with the manual Close button.</li>
+                    <li>The completed simulation moves to history, while the bot status records the latest action.</li>
+                </ol>
+            </details>
+
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">2. What each creation field means</summary>
+                <div style="overflow-x:auto;margin-top:12px;">
+                    <table style="width:100%;min-width:650px;border-collapse:collapse;">
+                        <thead><tr><th style="text-align:left;padding:9px;">Field</th><th style="text-align:left;padding:9px;">Plain-language meaning</th></tr></thead>
+                        <tbody style="color:#cbd5e1;">
+                            <tr><td style="padding:9px;"><strong>Bot name</strong></td><td style="padding:9px;">A label for recognizing the bot. It does not change the analysis.</td></tr>
+                            <tr><td style="padding:9px;"><strong>Pair</strong></td><td style="padding:9px;">The single Kraken market this bot watches. BTC/USD means Bitcoin measured in US dollars.</td></tr>
+                            <tr><td style="padding:9px;"><strong>Strategy</strong></td><td style="padding:9px;">The saved rule set defining required signal quality and paper exit boundaries.</td></tr>
+                            <tr><td style="padding:9px;"><strong>Allocated cash</strong></td><td style="padding:9px;">The simulated amount reserved for this bot. It is used to calculate paper position size and PnL.</td></tr>
+                            <tr><td style="padding:9px;"><strong>Available to allocate</strong></td><td style="padding:9px;">The displayed paper balance remaining after existing bot allocations are counted.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </details>
+
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">3. Understanding every table column</summary>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:13px;">
+                    <div><strong>Name / Pair</strong><p style="color:#94a3b8;line-height:1.55;">Which bot and Kraken market the row represents.</p></div>
+                    <div><strong>Strategy</strong><p style="color:#94a3b8;line-height:1.55;">The currently assigned entry and paper-risk rules.</p></div>
+                    <div><strong>Allocated Cash</strong><p style="color:#94a3b8;line-height:1.55;">The bot's reserved simulated budget.</p></div>
+                    <div><strong>Price</strong><p style="color:#94a3b8;line-height:1.55;">The latest available Kraken market price, refreshed independently from strategy decisions.</p></div>
+                    <div><strong>$ Change</strong><p style="color:#94a3b8;line-height:1.55;">Estimated unrealized paper PnL expressed as simulated dollars.</p></div>
+                    <div><strong>% Change</strong><p style="color:#94a3b8;line-height:1.55;">The same unrealized movement relative to the simulated entry value.</p></div>
+                    <div><strong>Status</strong><p style="color:#94a3b8;line-height:1.55;">Active means monitoring is enabled. Paused prevents new automated paper entries.</p></div>
+                    <div><strong>Positions</strong><p style="color:#94a3b8;line-height:1.55;">Current simulated open-position count compared with the plan limit.</p></div>
+                    <div><strong>Last Updated</strong><p style="color:#94a3b8;line-height:1.55;">When the row most recently received market or state information.</p></div>
+                    <div><strong>Last Action</strong><p style="color:#94a3b8;line-height:1.55;">A short explanation of what the bot most recently did.</p></div>
+                </div>
+            </details>
+
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">4. What the action buttons do</summary>
+                <ul style="color:#cbd5e1;line-height:1.75;padding-left:22px;margin-bottom:0;">
+                    <li><strong>View:</strong> opens the bot's configuration and current paper-position details.</li>
+                    <li><strong>Pause:</strong> stops new automated paper entries. An already open paper position remains visible.</li>
+                    <li><strong>Resume:</strong> returns a paused bot to monitoring.</li>
+                    <li><strong>Close:</strong> immediately closes the open paper position using a fresh Kraken price. The bot pauses afterward so it cannot automatically reopen on the next scan.</li>
+                    <li><strong>Delete:</strong> removes the bot configuration. This should only be used after reviewing any associated paper state.</li>
+                </ul>
+            </details>
+
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">5. Strategy and AI terms in simple language</summary>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-top:13px;">
+                    <div><strong>Signal score</strong><p style="color:#94a3b8;line-height:1.55;">A summary of how many configured market conditions agree. It is a filter, not a promise.</p></div>
+                    <div><strong>AI probability</strong><p style="color:#94a3b8;line-height:1.55;">A statistically calibrated estimate from validated paper outcomes. It is not certainty.</p></div>
+                    <div><strong>Regime</strong><p style="color:#94a3b8;line-height:1.55;">The broad market condition, such as trending, ranging or unusually volatile.</p></div>
+                    <div><strong>Abstention</strong><p style="color:#94a3b8;line-height:1.55;">The model deliberately chooses not to predict when models disagree, data is stale or conditions are unfamiliar.</p></div>
+                    <div><strong>Stop boundary</strong><p style="color:#94a3b8;line-height:1.55;">A paper exit intended to limit the size of a simulated adverse move.</p></div>
+                    <div><strong>Take-profit boundary</strong><p style="color:#94a3b8;line-height:1.55;">A paper exit when the configured favourable movement is reached.</p></div>
+                    <div><strong>Trailing boundary</strong><p style="color:#94a3b8;line-height:1.55;">A paper exit that follows a new peak and reacts if price moves back by the configured amount.</p></div>
+                    <div><strong>Cooldown</strong><p style="color:#94a3b8;line-height:1.55;">A waiting period that prevents immediate repeated entries.</p></div>
+                </div>
+            </details>
+
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">6. Common messages and what they mean</summary>
+                <ul style="color:#cbd5e1;line-height:1.75;padding-left:22px;margin-bottom:0;">
+                    <li><strong>Awaiting scan:</strong> the bot is enabled but has not completed its next scheduled evaluation.</li>
+                    <li><strong>Monitoring position:</strong> a paper position exists and its current value is being refreshed.</li>
+                    <li><strong>Rejected by validation:</strong> the model did not satisfy minimum quality checks.</li>
+                    <li><strong>Abstained:</strong> uncertainty or data-quality protection prevented a new paper entry.</li>
+                    <li><strong>Price unavailable:</strong> Kraken data could not be refreshed; stale information should not be treated as current.</li>
+                    <li><strong>Closed manually—paused:</strong> the customer used Close and automatic re-entry was disabled.</li>
+                </ul>
+            </details>
+
+            <details style="margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:15px;">
+                <summary style="cursor:pointer;font-weight:900;color:#38bdf8;">7. Beginner troubleshooting checklist</summary>
+                <ul style="color:#cbd5e1;line-height:1.75;padding-left:22px;margin-bottom:0;">
+                    <li>If the price says unavailable, wait for the next refresh and check the service-health indicator.</li>
+                    <li>If Close is hidden, the backend does not currently report an open paper position for that bot.</li>
+                    <li>If a bot never enters, review its Last Action before changing strategy settings.</li>
+                    <li>If the bot is paused after a manual close, use Resume only when continued paper monitoring is intended.</li>
+                    <li>If displayed values stop changing, refresh the dashboard; persisted paper state should be restored.</li>
+                    <li>Do not interpret a short winning period as proof that the model will remain profitable.</li>
+                </ul>
+            </details>
+
+            <div style="margin-top:16px;padding:14px;border:1px solid #7c2d12;border-radius:12px;background:rgba(124,45,18,.14);color:#fed7aa;line-height:1.6;">
+                <strong>Important:</strong> no strategy or AI model guarantees a favourable result. Market data can be delayed, conditions change, and simulated performance does not establish future performance.
+            </div>
         </div>
     </div>
 
@@ -4829,4 +5329,3 @@ async function loadEquityChart() {{
 
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
-

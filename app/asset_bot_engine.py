@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, UTC
@@ -17,6 +18,7 @@ BOTS_FILE = os.path.join(BASE_DIR, "bots.json")
 POSITIONS_FILE = os.path.join(BASE_DIR, "asset_bot_positions.json")
 TRADES_FILE = os.path.join(BASE_DIR, "asset_bot_trades.json")
 LOGS_FILE = os.path.join(BASE_DIR, "asset_bot_logs.json")
+MANUAL_CLOSE_GUARD = threading.Lock()
 
 
 
@@ -257,6 +259,20 @@ def close_paper_position(position, exit_price, reason):
     )
 
     return trade
+
+
+def close_existing_paper_position(username, bot_id):
+    """Immediately close one paper position using a fresh Kraken price.
+
+    This path is deliberately independent of strategy exit signals. The guard
+    prevents two dashboard requests from recording the same close twice.
+    """
+    with MANUAL_CLOSE_GUARD:
+        position = get_existing_position(username, bot_id)
+        if not position:
+            return None
+        exit_price = fetch_price(position["symbol"])
+        return close_paper_position(position, exit_price, "MANUAL_CLOSE")
 
 
 

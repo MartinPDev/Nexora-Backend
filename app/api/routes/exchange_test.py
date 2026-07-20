@@ -11,7 +11,7 @@ router = APIRouter(prefix="/exchange-test", tags=["exchange-test"])
 
 
 @router.get("/balance/{exchange_key_id}")
-def test_exchange_balance(
+def get_exchange_balance(
     exchange_key_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
