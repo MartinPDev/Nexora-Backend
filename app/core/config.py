@@ -20,7 +20,11 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
 
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 @lru_cache
