@@ -17,6 +17,8 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal, engine, get_db
+from app.api.deps import get_current_user
+from app.models.user import User
 from app.eligibility import is_eligible_adult
 from app.legacy_auth import hash_password, verify_password
 from app.core.json_store import load_json as load_json_file, save_json as save_json_file
@@ -2068,6 +2070,252 @@ def get_market_candles(symbol: str = "BTC/USD", interval: int = 5):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def ensure_desktop_default_strategy(username: str) -> dict:
+    strategies = load_strategies()
+    user_strategies = strategies.setdefault(username, [])
+
+    if user_strategies:
+        return user_strategies[0]
+
+    default_strategy = {
+        "id": secrets.token_hex(8),
+        "name": "Balanced Paper Strategy",
+        "min_score": 60.0,
+        "min_ai_probability": 0.50,
+        "stop_loss_percent": 2.0,
+        "partial_take_profit_percent": 4.0,
+        "trailing_stop_percent": 1.5,
+        "cooldown_hours": 2.0,
+        "mode": "balanced",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    user_strategies.append(default_strategy)
+    save_strategies(strategies)
+    return default_strategy
+
+
+@app.get("/api/v1/desktop/strategies")
+def desktop_list_strategies(
+    current_user: User = Depends(get_current_user),
+):
+    username = current_user.username
+    ensure_desktop_default_strategy(username)
+
+    strategies = load_strategies().get(username, [])
+    bots = load_bots().get(username, [])
+
+    usage = {}
+    for bot in bots:
+        strategy_id = bot.get("strategy_id")
+        if strategy_id:
+            usage[strategy_id] = usage.get(strategy_id, 0) + 1
+
+    return [
+        {
+            **strategy,
+            "assigned_bot_count": usage.get(strategy.get("id"), 0),
+        }
+        for strategy in strategies
+    ]
+
+
+@app.get("/api/v1/desktop/bots")
+def desktop_list_bots(
+    current_user: User = Depends(get_current_user),
+):
+    return load_bots().get(current_user.username, [])
+
+
+@app.post("/api/v1/desktop/bots")
+def desktop_create_paper_bot(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+):
+    username = current_user.username
+    default_strategy = ensure_desktop_default_strategy(username)
+
+    request_payload = dict(payload)
+    request_payload["strategy_id"] = str(
+        request_payload.get("strategy_id") or default_strategy["id"]
+    ).strip()
+    request_payload["mode"] = "paper"
+
+    result = create_bot(username, request_payload)
+
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(status_code=422, detail=result["error"])
+
+    return result
+
+@app.get("/api/v1/desktop/portfolio")
+def desktop_portfolio(
+    current_user: User = Depends(get_current_user),
+):
+    username = current_user.username
+
+    dashboard = {}
+    if os.path.exists(DASHBOARD_FILE):
+        try:
+            with open(DASHBOARD_FILE, "r") as file:
+                loaded_dashboard = json.load(file)
+
+            if loaded_dashboard.get("username") == username:
+                dashboard = loaded_dashboard
+        except Exception:
+            dashboard = {}
+
+    positions = []
+    if os.path.exists(ASSET_BOT_POSITIONS_FILE):
+        try:
+            with open(ASSET_BOT_POSITIONS_FILE, "r") as file:
+                stored_positions = json.load(file)
+
+            for position_key, position in stored_positions.items():
+                if position.get("username") != username:
+                    continue
+
+                live_position = dict(position)
+                live_position["position_key"] = position_key
+
+                symbol = live_position.get("symbol")
+                entry_price = float(live_position.get("entry_price") or 0)
+                amount = float(live_position.get("amount") or 0)
+
+                try:
+                    live = get_live_market_price(symbol.replace("/", "-"))
+                    current_price = float(live.get("price") or entry_price)
+                except Exception:
+                    current_price = float(
+                        live_position.get("current_price") or entry_price
+                    )
+
+                current_value = amount * current_price
+                cost_basis = amount * entry_price
+                unrealized_pnl = current_value - cost_basis
+
+                live_position.update({
+                    "current_price": current_price,
+                    "current_value": current_value,
+                    "unrealized_pnl": unrealized_pnl,
+                    "unrealized_pnl_percent": (
+                        unrealized_pnl / cost_basis * 100
+                        if cost_basis > 0
+                        else 0
+                    ),
+                })
+                positions.append(live_position)
+        except Exception:
+            positions = []
+
+    history = []
+    if os.path.exists(EQUITY_HISTORY_FILE):
+        try:
+            with open(EQUITY_HISTORY_FILE, "r") as file:
+                history = json.load(file)
+
+            if not isinstance(history, list):
+                history = []
+        except Exception:
+            history = []
+
+    unrealized_pnl = sum(
+        float(position.get("unrealized_pnl") or 0)
+        for position in positions
+    )
+
+    return {
+        "total_value": float(dashboard.get("equity") or 0),
+        "cash": float(dashboard.get("cash") or 0),
+        "unrealized_pnl": unrealized_pnl,
+        "return_percent": float(dashboard.get("pnl_percent") or 0),
+        "positions": positions,
+        "history": history,
+    }
+
+
+@app.get("/api/v1/desktop/markets")
+def desktop_markets(
+    current_user: User = Depends(get_current_user),
+):
+    del current_user
+
+    symbols = [
+        "BTC-USD",
+        "ETH-USD",
+        "XRP-USD",
+        "SOL-USD",
+        "ADA-USD",
+        "DOGE-USD",
+        "HBAR-USD",
+        "XLM-USD",
+        "ICP-USD",
+        "WLD-USD",
+        "ONDO-USD",
+    ]
+
+    markets = []
+
+    for symbol in symbols:
+        try:
+            live = get_live_market_price(symbol)
+            markets.append({
+                "symbol": live.get("symbol"),
+                "price": live.get("price"),
+                "change_percent": live.get("change_percent") or 0,
+                "high": live.get("high"),
+                "low": live.get("low"),
+                "volume": live.get("volume") or 0,
+            })
+        except Exception as error:
+            markets.append({
+                "symbol": symbol.replace("-", "/"),
+                "price": None,
+                "change_percent": 0,
+                "high": None,
+                "low": None,
+                "volume": 0,
+                "error": str(error),
+            })
+
+    return {"markets": markets}
+
+
+@app.get("/api/v1/desktop/trades")
+def desktop_trade_history(
+    current_user: User = Depends(get_current_user),
+):
+    return {
+        "trades": get_trade_history(current_user.username),
+    }
+
+
+@app.get("/api/v1/desktop/notifications")
+def desktop_notifications(
+    current_user: User = Depends(get_current_user),
+):
+    username = current_user.username
+    notifications = []
+
+    bots = load_bots().get(username, [])
+    for bot in bots:
+        last_action = str(bot.get("last_action") or "").strip()
+        if not last_action:
+            continue
+
+        notifications.append({
+            "id": f"bot-{bot.get('id')}",
+            "type": "bot",
+            "title": bot.get("name") or "Paper bot",
+            "message": last_action,
+            "description": bot.get("symbol") or "",
+            "created_at": bot.get("last_scan") or bot.get("created_at"),
+            "read": False,
+        })
+
+    return {
+        "notifications": notifications[-20:],
+    }
 
 
 @app.get("/dashboard-ui/{username}", response_class=HTMLResponse)
