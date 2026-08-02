@@ -2119,6 +2119,18 @@ def desktop_list_strategies(
         for strategy in strategies
     ]
 
+@app.post("/api/v1/desktop/strategies")
+def desktop_create_strategy(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+):
+    result = create_strategy(current_user.username, payload)
+
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(status_code=422, detail=result["error"])
+
+    return result
+
 
 @app.get("/api/v1/desktop/bots")
 def desktop_list_bots(
