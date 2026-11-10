@@ -80,6 +80,7 @@ from app.api.routes.auth import router as auth_router
 from app.api.routes.users import router as users_router
 from app.api.routes.exchanges import router as exchanges_router
 from app.api.routes.exchange_test import router as exchange_test_route
+from app.api.routes.desktop import router as desktop_router
 
 
 class AuthRequest(BaseModel):
@@ -171,6 +172,7 @@ app.include_router(strategies_router, prefix="/api/v1")
 app.include_router(bots_router, prefix="/api/v1")
 app.include_router(exchanges_router, prefix="/api/v1")
 app.include_router(exchange_test_route, prefix="/api/v1")
+app.include_router(desktop_router, prefix="/api/v1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins.split(","),
