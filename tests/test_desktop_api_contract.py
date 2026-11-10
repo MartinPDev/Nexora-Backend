@@ -23,8 +23,8 @@ class DesktopApiContractTests(unittest.TestCase):
                 if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute):
                     if dec.func.attr == "get" and dec.args and isinstance(dec.args[0], ast.Constant):
                         paths[dec.args[0].value] = fn
-        self.assertTrue({"/health", "/desktop/bots", "/desktop/strategies"}.issubset(paths))
-        for path in ("/desktop/bots", "/desktop/strategies"):
+        self.assertTrue({"/health", "/desktop/bots", "/desktop/strategies", "/desktop/dashboard"}.issubset(paths))
+        for path in ("/desktop/bots", "/desktop/strategies", "/desktop/dashboard"):
             fn = paths[path]
             names = [
                 n.args[0].id
@@ -41,6 +41,8 @@ class DesktopApiContractTests(unittest.TestCase):
         source = DESKTOP.read_text(encoding="utf-8")
         self.assertIn("Bot.user_id == current_user.id", source)
         self.assertIn("Strategy.user_id == current_user.id", source)
+        self.assertIn('"financial_data_status": "unavailable"', source)
+        self.assertIn('"portfolio_value": None', source)
 
 
 if __name__ == "__main__":
