@@ -2030,7 +2030,7 @@ def get_market_candles(symbol: str = "BTC/USD", interval: int = 5):
 
 
 @app.get("/dashboard-ui/{username}", response_class=HTMLResponse)
-def dashboard_ui(username: str, _owner: str = Depends(require_legacy_account_owner)):
+def dashboard_ui(username: str):
     return f"""
 <!DOCTYPE html>
 <html>
@@ -3257,6 +3257,21 @@ def dashboard_ui(username: str, _owner: str = Depends(require_legacy_account_own
         const savedUser = localStorage.getItem("bot_username");
         const savedToken = localStorage.getItem("bot_token");
 
+        // Legacy API calls require the authenticated session token.
+        // Browser navigation cannot attach custom headers, so the dashboard
+        // HTML remains a shell; user data endpoints enforce ownership.
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = (resource, options = {{}}) => {{
+            const url = typeof resource === "string" ? resource : resource.url;
+            const resolved = new URL(url, window.location.href);
+            if (resolved.origin !== window.location.origin || resolved.pathname.startsWith("/api/v1/")) {{
+                return originalFetch(resource, options);
+            }}
+            const headers = new Headers(options.headers || (resource instanceof Request ? resource.headers : undefined));
+            if (savedToken) headers.set("x-session-token", savedToken);
+            return originalFetch(resource, {{...options, headers}});
+        }};
+
         if (!savedUser || !savedToken) {{
             window.location.href = "/login";
        }}
@@ -4077,28 +4092,21 @@ async function loadEquityChart() {{
     }}
 
     async function changePlan(plan) {{
-    if (plan === 'basic') {{
-        const res = await fetch('/billing/{username}/checkout/basic', {{
+        const checkoutPlan = plan === "premium" ? "elite" : plan;
+        if (!["basic", "pro", "elite"].includes(checkoutPlan)) {{
+            alert("Unsupported subscription plan.");
+            return;
+        }}
+        const res = await fetch('/billing/{username}/checkout/' + checkoutPlan, {{
             method: 'POST'
         }});
-
         const data = await res.json();
-
-        if (data.checkout_url) {{
+        if (res.ok && data.checkout_url) {{
             window.location.href = data.checkout_url;
             return;
         }}
-
-        alert(data.error || 'Checkout failed');
-        return;
+        alert(data.detail || data.error || 'Checkout failed');
     }}
-
-    await fetch('/billing/{username}/set-plan/' + plan, {{
-        method: 'POST'
-    }});
-
-    loadBilling();
-}}
 
     let loadBotsRunning = false;
     let latestAssetPositions = [];
