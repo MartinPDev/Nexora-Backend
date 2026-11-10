@@ -41,7 +41,9 @@ def webhook(event, subscription=None, secret="whsec_test"):
         ),
         "activate_user_plan": Mock(return_value={"plan": "pro"}),
     }
-    exec(compile(ast.Module(body=funcs, type_ignores=[]), str(SOURCE), "exec"), namespace)
+    # Execute the handler in isolation without its FastAPI route decorator.
+    funcs[0].decorator_list = []
+    exec(compile(ast.fix_missing_locations(ast.Module(body=funcs, type_ignores=[])), str(SOURCE), "exec"), namespace)
     return namespace
 
 
