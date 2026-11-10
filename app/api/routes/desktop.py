@@ -65,3 +65,30 @@ def desktop_strategies(
         }
         for item in strategies
     ]}
+
+
+@router.get("/desktop/dashboard")
+def desktop_dashboard(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Account-scoped bot overview; financial metrics require a real paper ledger."""
+    bots = db.query(Bot).filter(Bot.user_id == current_user.id).all()
+    return {
+        "bots_total": len(bots),
+        "bots_running": sum(bool(bot.is_enabled) for bot in bots),
+        "portfolio_value": None,
+        "daily_pnl": None,
+        "daily_pnl_percent": None,
+        "weekly_pnl": None,
+        "open_positions": None,
+        "signals_today": None,
+        "win_rate": None,
+        "closed_trades": None,
+        "chart": [],
+        "trades": [],
+        "positions": [],
+        "activity": [],
+        "financial_data_status": "unavailable",
+        "mode": "paper",
+    }
