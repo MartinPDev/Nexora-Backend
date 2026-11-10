@@ -92,3 +92,35 @@ def desktop_dashboard(
         "financial_data_status": "unavailable",
         "mode": "paper",
     }
+
+
+@router.get("/desktop/portfolio")
+def desktop_portfolio(current_user: User = Depends(get_current_user)):
+    """Do not imply that an unintegrated paper ledger has zero funds."""
+    return {
+        "total_value": None,
+        "cash": None,
+        "unrealized_pnl": None,
+        "return_percent": None,
+        "positions": [],
+        "history": [],
+        "financial_data_status": "unavailable",
+    }
+
+
+@router.get("/desktop/trades")
+def desktop_trades(current_user: User = Depends(get_current_user)):
+    """Trade history is unavailable until a verified account ledger is wired."""
+    return {"trades": [], "data_status": "unavailable"}
+
+
+@router.get("/desktop/notifications")
+def desktop_notifications(current_user: User = Depends(get_current_user)):
+    """No notification records are claimed without a backed notification store."""
+    return {"notifications": [], "data_status": "unavailable"}
+
+
+@router.get("/desktop/markets")
+def desktop_markets(current_user: User = Depends(get_current_user)):
+    """Fail explicitly until a vetted Kraken public market-data feed is connected."""
+    return {"markets": [], "data_status": "unavailable"}
