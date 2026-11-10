@@ -1415,6 +1415,25 @@ def set_plan(username: str, plan: str):
     """Legacy endpoint disabled: entitlements require verified payment processing."""
     raise HTTPException(status_code=403, detail="Plan changes require verified billing.")
 
+def legacy_checkout_return_url(username: str):
+    """Use a configured public origin, never localhost in production."""
+    from urllib.parse import quote, urlparse
+    origin = os.getenv("NEXORA_PUBLIC_APP_ORIGIN", "").strip().rstrip("/")
+    if not origin:
+        if settings.app_env.lower() in {"production", "prod"}:
+            raise HTTPException(status_code=503, detail="Public application origin is not configured.")
+        origin = "http://127.0.0.1:8000"
+    parsed = urlparse(origin)
+    if parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise HTTPException(status_code=503, detail="Invalid public application origin.")
+    if settings.app_env.lower() in {"production", "prod"}:
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise HTTPException(status_code=503, detail="Public application origin must use HTTPS.")
+    elif parsed.scheme not in {"https", "http"} or not parsed.hostname:
+        raise HTTPException(status_code=503, detail="Invalid public application origin.")
+    return origin + "/dashboard-ui/" + quote(username, safe="")
+
+
 @app.post("/billing/{username}/checkout/{plan}")
 def create_checkout_session(username: str, plan: str, _owner: str = Depends(require_legacy_account_owner)):
     if plan not in STRIPE_PRICE_IDS:
@@ -1429,8 +1448,8 @@ def create_checkout_session(username: str, plan: str, _owner: str = Depends(requ
                     "quantity": 1
                 }
             ],
-            success_url="http://127.0.0.1:8000/dashboard-ui/" + username,
-            cancel_url="http://127.0.0.1:8000/dashboard-ui/" + username,
+            success_url=legacy_checkout_return_url(username),
+            cancel_url=legacy_checkout_return_url(username),
             metadata={
                 "username": username,
                 "plan": plan
@@ -1457,8 +1476,8 @@ def create_basic_checkout(username: str, _owner: str = Depends(require_legacy_ac
                     "quantity": 1
                 }
             ],
-            success_url="http://127.0.0.1:8000/dashboard-ui/" + username,
-            cancel_url="http://127.0.0.1:8000/dashboard-ui/" + username,
+            success_url=legacy_checkout_return_url(username),
+            cancel_url=legacy_checkout_return_url(username),
             metadata={
                 "username": username,
                 "plan": "basic"
@@ -1479,8 +1498,8 @@ def checkout_pro(username: str, _owner: str = Depends(require_legacy_account_own
             "price": STRIPE_PRICE_IDS["pro"],
             "quantity": 1
         }],
-        success_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
-        cancel_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
+        success_url=legacy_checkout_return_url(username),
+        cancel_url=legacy_checkout_return_url(username),
         metadata={
             "username": username,
             "plan": "pro"
@@ -1498,8 +1517,8 @@ def checkout_premium(username: str, _owner: str = Depends(require_legacy_account
             "price": STRIPE_PRICE_IDS["elite"],
             "quantity": 1
         }],
-        success_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
-        cancel_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
+        success_url=legacy_checkout_return_url(username),
+        cancel_url=legacy_checkout_return_url(username),
         metadata={
             "username": username,
             "plan": "elite"
