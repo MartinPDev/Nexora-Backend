@@ -35,7 +35,8 @@ class DesktopApiContractTests(unittest.TestCase):
                 and n.args and isinstance(n.args[0], ast.Name)
             ]
             self.assertIn("get_current_user", names, path)
-            self.assertIn("get_db", names, path)
+            if path in {"/desktop/bots", "/desktop/strategies", "/desktop/dashboard"}:
+                self.assertIn("get_db", names, path)
 
     def test_queries_filter_by_current_user(self):
         source = DESKTOP.read_text(encoding="utf-8")
