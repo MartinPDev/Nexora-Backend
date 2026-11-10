@@ -1402,57 +1402,8 @@ def get_billing(username: str):
 
 @app.post("/billing/{username}/set-plan/{plan}")
 def set_plan(username: str, plan: str):
-    # Public plan changes are disabled: only verified billing events may grant entitlements.
+    """Legacy endpoint disabled: entitlements require verified payment processing."""
     raise HTTPException(status_code=403, detail="Plan changes require verified billing.")
-    plans = {
-        "free": {
-            "max_bots": 1,
-            "max_positions": 2,
-            "paper_trading": True,
-            "live_trading": False,
-            "advanced_ai": False
-        },
-        "basic": {
-            "max_bots": 1,
-            "max_positions": 2,
-            "paper_trading": True,
-            "live_trading": False,
-            "advanced_ai": False
-        },
-
-        "pro": {
-            "max_bots": 3,
-            "max_positions": 5,
-            "paper_trading": True,
-            "live_trading": True,
-            "advanced_ai": True
-        },
-        "premium": {
-            "max_bots": 10,
-            "max_positions": 15,
-            "paper_trading": True,
-            "live_trading": True,
-            "advanced_ai": True
-        }
-    }
-    if plan not in plans:
-        return {"error": "Invalid plan"}
-    billing = {}
-
-    if os.path.exists(BILLING_FILE):
-        with open(BILLING_FILE, "r") as f:
-            billing = json.load(f)
-
-    billing[username] = {
-        "username": username,
-        "plan": plan,
-        "subscription_status": "active" if plan != "free" else "inactive",
-        "features": plans[plan]
-    }
-    with open(BILLING_FILE, "w") as f:
-        json.dump(billing, f, indent=2)
-
-    return billing[username]
 
 @app.post("/billing/{username}/checkout/{plan}")
 def create_checkout_session(username: str, plan: str):
