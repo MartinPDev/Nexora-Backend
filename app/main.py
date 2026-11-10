@@ -721,7 +721,7 @@ def health_check():
     return health_snapshot()
 
 @app.get("/dashboard/{username}")
-def get_dashboard(username: str):
+def get_dashboard(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(DASHBOARD_FILE):
         return {
             "error": "Dashboard file not found",
@@ -740,12 +740,12 @@ def get_dashboard(username: str):
     return data
 
 @app.get("/bots/{username}")
-def get_bots(username: str):
+def get_bots(username: str, _owner: str = Depends(require_legacy_account_owner)):
     bots = load_bots()
     return bots.get(username, [])
 
 @app.get("/asset-bot-positions/{username}")
-def get_asset_bot_positions(username: str):
+def get_asset_bot_positions(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(ASSET_BOT_POSITIONS_FILE):
         return []
 
@@ -795,7 +795,7 @@ def get_asset_bot_positions(username: str):
 
 
 @app.post("/asset-bot-close-position/{username}/{bot_id}")
-def close_asset_bot_position(username: str, bot_id: str):
+def close_asset_bot_position(username: str, bot_id: str, _owner: str = Depends(require_legacy_account_owner)):
     from app.asset_bot_engine import close_existing_paper_position
 
     trade = close_existing_paper_position(username, bot_id)
@@ -822,7 +822,7 @@ def close_asset_bot_position(username: str, bot_id: str):
     }
 
 @app.get("/bot-control/{username}")
-def get_bot_control(username: str):
+def get_bot_control(username: str, _owner: str = Depends(require_legacy_account_owner)):
     try:
         if not os.path.exists(CONTROL_FILE):
             return {
@@ -846,7 +846,7 @@ def get_bot_control(username: str):
         }
 
 @app.get("/settings/{username}")
-def get_settings(username: str):
+def get_settings(username: str, _owner: str = Depends(require_legacy_account_owner)):
     default_settings = {
         "username": username,
         "risk_percent": 1.0,
@@ -871,7 +871,7 @@ def get_settings(username: str):
     return data
 
 @app.get("/strategies/{username}")
-def get_strategies(username: str):
+def get_strategies(username: str, _owner: str = Depends(require_legacy_account_owner)):
     strategies = load_strategies()
     user_strategies = strategies.get(username, [])
     bots = load_bots().get(username, [])
@@ -903,7 +903,7 @@ def _strategy_number(payload, field, default, minimum, maximum):
 
 
 @app.post("/strategies/{username}/create")
-def create_strategy(username: str, strategy: dict):
+def create_strategy(username: str, strategy: dict, _owner: str = Depends(require_legacy_account_owner)):
     strategies = load_strategies()
     user_strategies = strategies.setdefault(username, [])
 
@@ -940,7 +940,7 @@ def create_strategy(username: str, strategy: dict):
 
 
 @app.delete("/strategies/{username}/{strategy_id}")
-def delete_strategy(username: str, strategy_id: str):
+def delete_strategy(username: str, strategy_id: str, _owner: str = Depends(require_legacy_account_owner)):
     bots = load_bots().get(username, [])
     assigned = [bot for bot in bots if bot.get("strategy_id") == strategy_id]
     if assigned:
@@ -960,7 +960,7 @@ def delete_strategy(username: str, strategy_id: str):
     return {"success": True, "deleted_strategy_id": strategy_id}
 
 @app.post("/settings/{username}")
-def save_settings(username: str, settings: dict):
+def save_settings(username: str, settings: dict, _owner: str = Depends(require_legacy_account_owner)):
     settings["username"] = username
 
     with open(SETTINGS_FILE, "w") as f:
@@ -1540,7 +1540,7 @@ async def stripe_webhook(request: Request):
 
 
 @app.post("/bots/{username}/create")
-def create_bot(username: str, bot: dict):
+def create_bot(username: str, bot: dict, _owner: str = Depends(require_legacy_account_owner)):
     billing = get_user_billing(username)
     features = billing["features"]
 
@@ -1647,7 +1647,7 @@ def create_bot(username: str, bot: dict):
 
 
 @app.post("/bots/{username}/{bot_id}/pause")
-def pause_bot(username: str, bot_id: str):
+def pause_bot(username: str, bot_id: str, _owner: str = Depends(require_legacy_account_owner)):
     bots = load_bots()
     user_bots = bots.get(username, [])
 
@@ -1666,7 +1666,7 @@ def pause_bot(username: str, bot_id: str):
 
 
 @app.post("/bots/{username}/{bot_id}/resume")
-def resume_bot(username: str, bot_id: str):
+def resume_bot(username: str, bot_id: str, _owner: str = Depends(require_legacy_account_owner)):
     bots = load_bots()
     user_bots = bots.get(username, [])
 
@@ -1687,7 +1687,7 @@ def resume_bot(username: str, bot_id: str):
 
 
 @app.delete("/bots/{username}/{bot_id}")
-def delete_bot(username: str, bot_id: str):
+def delete_bot(username: str, bot_id: str, _owner: str = Depends(require_legacy_account_owner)):
     bots = load_bots()
 
     user_bots = bots.get(username, [])
@@ -1717,7 +1717,7 @@ def delete_bot(username: str, bot_id: str):
 
 
 @app.get("/trade-history/{username}")
-def get_trade_history(username: str):
+def get_trade_history(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(TRADE_RESULTS_FILE):
         return []
 
@@ -1745,7 +1745,7 @@ def get_trade_history(username: str):
     return trades[-20:]
 
 @app.get("/bot-logs/{username}")
-def get_bot_logs(username: str):
+def get_bot_logs(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(BOT_LOG_FILE):
         return []
 
@@ -1767,16 +1767,16 @@ def get_bot_logs(username: str):
 
 
 @app.post("/bot-control/{username}/start")
-def start_bot(username: str):
+def start_bot(username: str, _owner: str = Depends(require_legacy_account_owner)):
     return save_bot_control(username, True)
 
 
 @app.post("/bot-control/{username}/stop")
-def stop_bot(username: str):
+def stop_bot(username: str, _owner: str = Depends(require_legacy_account_owner)):
     return save_bot_control(username, False)
 
 @app.get("/equity-history/{username}")
-def get_equity_history(username: str):
+def get_equity_history(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(EQUITY_HISTORY_FILE):
         return []
 
@@ -1993,7 +1993,7 @@ def get_market_candles(symbol: str = "BTC/USD", interval: int = 5):
 
 
 @app.get("/dashboard-ui/{username}", response_class=HTMLResponse)
-def dashboard_ui(username: str):
+def dashboard_ui(username: str, _owner: str = Depends(require_legacy_account_owner)):
     return f"""
 <!DOCTYPE html>
 <html>
