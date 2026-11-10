@@ -23,8 +23,8 @@ class DesktopApiContractTests(unittest.TestCase):
                 if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute):
                     if dec.func.attr == "get" and dec.args and isinstance(dec.args[0], ast.Constant):
                         paths[dec.args[0].value] = fn
-        self.assertTrue({"/health", "/desktop/bots", "/desktop/strategies", "/desktop/dashboard"}.issubset(paths))
-        for path in ("/desktop/bots", "/desktop/strategies", "/desktop/dashboard"):
+        self.assertTrue({"/health", "/desktop/bots", "/desktop/strategies", "/desktop/dashboard", "/desktop/portfolio", "/desktop/trades", "/desktop/notifications", "/desktop/markets"}.issubset(paths))
+        for path in ("/desktop/bots", "/desktop/strategies", "/desktop/dashboard", "/desktop/portfolio", "/desktop/trades", "/desktop/notifications", "/desktop/markets"):
             fn = paths[path]
             names = [
                 n.args[0].id
