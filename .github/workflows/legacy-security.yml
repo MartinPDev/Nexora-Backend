@@ -4,6 +4,8 @@ on:
     paths:
       - "app/main.py"
       - "tests/test_legacy_*.py"
+      - "tests/test_production_config_security.py"
+      - "app/core/config.py"
       - ".github/workflows/legacy-security.yml"
   push:
     branches:
