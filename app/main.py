@@ -1511,32 +1511,50 @@ def checkout_premium(username: str, _owner: str = Depends(require_legacy_account
 
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request):
+    """Only verified, paid subscription checkouts may grant entitlements."""
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Billing webhook is not configured.")
     payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-
+    signature = request.headers.get("stripe-signature")
+    if not signature:
+        raise HTTPException(status_code=400, detail="Missing Stripe signature.")
     try:
-        event = stripe.Webhook.construct_event(
-            payload,
-            sig_header,
-            STRIPE_WEBHOOK_SECRET
-        )
-    except Exception as e:
-        return {"error": str(e)}
+        event = stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
+    except (ValueError, stripe.error.SignatureVerificationError):
+        raise HTTPException(status_code=400, detail="Invalid Stripe webhook.")
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
+    if event["type"] != "checkout.session.completed":
+        return {"success": True}
 
-        usename = None
-        plan = None
+    session = event["data"]["object"]
+    metadata = session.get("metadata") or {}
+    username = metadata.get("username")
+    plan = metadata.get("plan")
+    expected_price = STRIPE_PRICE_IDS.get(plan)
+    if not username or not expected_price or session.get("mode") != "subscription":
+        return {"success": True, "activated": False}
 
-        if session.metadata:
-            username = session.metadata["username"] if "username" in session.metadata else None
-            plan = session.metadata["plan"] if "plan" in session.metadata else None
+    # Checkout completion alone is not proof of a paid subscription.
+    if session.get("payment_status") != "paid":
+        return {"success": True, "activated": False}
 
-        if username and plan:
-            activate_user_plan(username, plan)
+    # Validate the subscription's actual price, not just client-controllable metadata.
+    subscription_id = session.get("subscription")
+    if not subscription_id:
+        return {"success": True, "activated": False}
+    subscription = stripe.Subscription.retrieve(subscription_id)
+    if subscription.get("status") not in {"active", "trialing"}:
+        return {"success": True, "activated": False}
+    items = subscription.get("items", {}).get("data", [])
+    if not any(item.get("price", {}).get("id") == expected_price for item in items):
+        return {"success": True, "activated": False}
 
-    return {"success": True}
+    # Legacy entitlement names differ from Stripe product names.
+    entitlement_plan = "premium" if plan == "elite" else plan
+    result = activate_user_plan(username, entitlement_plan)
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail="Unable to activate subscription.")
+    return {"success": True, "activated": True}
 
 
 @app.post("/bots/{username}/create")
