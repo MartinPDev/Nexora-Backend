@@ -1390,8 +1390,18 @@ async function signupBasic() {
 """
 
 
+def require_legacy_account_owner(username: str, x_session_token: str = Header(None)):
+    """Fail closed unless the legacy session belongs to the requested account."""
+    owner = SESSIONS.get(x_session_token or "")
+    if not owner:
+        raise HTTPException(status_code=401, detail="Authenticated session required.")
+    if owner != username.strip().lower():
+        raise HTTPException(status_code=403, detail="Account access denied.")
+    return owner
+
+
 @app.get("/billing/{username}")
-def get_billing(username: str):
+def get_billing(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(BILLING_FILE):
         return get_default_billing(username)
 
@@ -1406,7 +1416,7 @@ def set_plan(username: str, plan: str):
     raise HTTPException(status_code=403, detail="Plan changes require verified billing.")
 
 @app.post("/billing/{username}/checkout/{plan}")
-def create_checkout_session(username: str, plan: str):
+def create_checkout_session(username: str, plan: str, _owner: str = Depends(require_legacy_account_owner)):
     if plan not in STRIPE_PRICE_IDS:
         return {"error": "Invalid plan"}
 
@@ -1437,7 +1447,7 @@ def create_checkout_session(username: str, plan: str):
         }
 
 @app.post("/billing/{username}/checkout/basic")
-def create_basic_checkout(username: str):
+def create_basic_checkout(username: str, _owner: str = Depends(require_legacy_account_owner)):
     try:
         session = stripe.checkout.Session.create(
             mode="subscription",
@@ -1461,7 +1471,7 @@ def create_basic_checkout(username: str):
         return {"error": str(e)}
 
 @app.post("/billing/{username}/checkout/pro")
-def checkout_pro(username: str):
+def checkout_pro(username: str, _owner: str = Depends(require_legacy_account_owner)):
     session = stripe.checkout.Session.create(
         payment_method_types=["card"],
         mode="subscription",
@@ -1480,7 +1490,7 @@ def checkout_pro(username: str):
     return {"checkout_url": session.url}
 
 @app.post("/billing/{username}/checkout/premium")
-def checkout_premium(username: str):
+def checkout_premium(username: str, _owner: str = Depends(require_legacy_account_owner)):
     session = stripe.checkout.Session.create(
         payment_method_types=["card"],
         mode="subscription",
