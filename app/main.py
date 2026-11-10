@@ -1402,6 +1402,8 @@ def get_billing(username: str):
 
 @app.post("/billing/{username}/set-plan/{plan}")
 def set_plan(username: str, plan: str):
+    # Public plan changes are disabled: only verified billing events may grant entitlements.
+    raise HTTPException(status_code=403, detail="Plan changes require verified billing.")
     plans = {
         "free": {
             "max_bots": 1,
