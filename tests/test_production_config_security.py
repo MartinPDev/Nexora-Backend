@@ -1,13 +1,9 @@
 """Production configuration fail-closed checks."""
 import unittest
 
-try:
-    from app.core.config import Settings
-except ImportError:
-    Settings = None
+from app.core.config import Settings
 
 
-@unittest.skipIf(Settings is None, "pydantic-settings is not installed")
 class ProductionConfigurationTests(unittest.TestCase):
     def config(self, **overrides):
         values = {
