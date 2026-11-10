@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.models.user import User
 from app.models.bot import Bot
 from app.models.strategy import Strategy
+from app.models.rapid_scalper_trade import RapidScalperTrade
 
 router = APIRouter(tags=["desktop"])
 
@@ -109,9 +110,38 @@ def desktop_portfolio(current_user: User = Depends(get_current_user)):
 
 
 @router.get("/desktop/trades")
-def desktop_trades(current_user: User = Depends(get_current_user)):
-    """Trade history is unavailable until a verified account ledger is wired."""
-    return {"trades": [], "data_status": "unavailable"}
+def desktop_trades(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Only persisted, closed paper scalper trades owned by this username."""
+    rows = (
+        db.query(RapidScalperTrade)
+        .filter(
+            RapidScalperTrade.username == current_user.username,
+            RapidScalperTrade.mode == "paper",
+            RapidScalperTrade.closed_at.isnot(None),
+        )
+        .order_by(RapidScalperTrade.closed_at.desc())
+        .limit(200)
+        .all()
+    )
+    return {
+        "trades": [
+            {
+                "id": row.id,
+                "symbol": row.symbol,
+                "side": row.side,
+                "amount": row.amount_usd,
+                "price": row.exit_price,
+                "pnl": row.pnl_usd,
+                "time": row.closed_at.isoformat() if row.closed_at else None,
+                "source": "rapid_scalper_paper",
+            }
+            for row in rows
+        ],
+        "data_status": "rapid_scalper_only",
+    }
 
 
 @router.get("/desktop/notifications")
