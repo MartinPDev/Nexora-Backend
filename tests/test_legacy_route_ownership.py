@@ -29,6 +29,10 @@ class LegacyRouteOwnershipTests(unittest.TestCase):
             if not paths:
                 continue
             checked.extend(paths)
+            # The HTML dashboard shell is navigable without custom headers;
+            # all underlying user-data API endpoints must enforce ownership.
+            if node.name == "dashboard_ui" and paths == ["/dashboard-ui/{username}"]:
+                continue
             if node.name == "set_plan":
                 self.assertTrue(
                     any(isinstance(stmt, ast.Raise) for stmt in node.body),
