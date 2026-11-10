@@ -3,7 +3,7 @@ on:
   pull_request:
     paths:
       - "app/main.py"
-      - "tests/test_legacy_billing_*.py"
+      - "tests/test_legacy_*.py"
       - ".github/workflows/legacy-security.yml"
   push:
     branches:
@@ -18,7 +18,7 @@ jobs:
           python-version: "3.11"
       - name: Compile backend and security tests
         run: |
-          python -m py_compile app/main.py tests/test_legacy_billing_security.py tests/test_legacy_billing_ownership.py
+          python -m py_compile app/main.py tests/test_legacy_billing_security.py tests/test_legacy_billing_ownership.py tests/test_legacy_route_ownership.py
       - name: Execute standalone legacy security regressions
         run: |
-          python -m unittest discover -s tests -p "test_legacy_billing_*.py" -v
+          python -m unittest discover -s tests -p "test_legacy_*.py" -v
