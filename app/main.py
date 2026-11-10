@@ -1495,7 +1495,7 @@ def checkout_premium(username: str, _owner: str = Depends(require_legacy_account
         payment_method_types=["card"],
         mode="subscription",
         line_items=[{
-            "price": STRIPE_PRICE_IDS["premium"],
+            "price": STRIPE_PRICE_IDS["elite"],
             "quantity": 1
         }],
         success_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
