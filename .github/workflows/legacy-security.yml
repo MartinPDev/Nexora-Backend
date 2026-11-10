@@ -6,6 +6,8 @@ on:
       - "tests/test_legacy_*.py"
       - "tests/test_production_config_security.py"
       - "app/core/config.py"
+      - "app/api/routes/desktop.py"
+      - "tests/test_desktop_api_contract.py"
       - ".github/workflows/legacy-security.yml"
   push:
     branches:
@@ -27,3 +29,4 @@ jobs:
         run: |
           python -m unittest discover -s tests -p "test_legacy_*.py" -v
           python -m unittest discover -s tests -p "test_production_config_security.py" -v
+          python -m unittest discover -s tests -p "test_desktop_api_contract.py" -v
