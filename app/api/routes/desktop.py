@@ -161,12 +161,12 @@ def desktop_trades(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Only persisted, closed paper scalper trades owned by this username."""
+    """Only persisted paper-executed scalper trades owned by this username."""
     rows = (
         db.query(RapidScalperTrade)
         .filter(
             RapidScalperTrade.username == current_user.username,
-            RapidScalperTrade.mode == "paper",
+            RapidScalperTrade.status == "paper_executed",
             RapidScalperTrade.closed_at.isnot(None),
         )
         .order_by(RapidScalperTrade.closed_at.desc())
