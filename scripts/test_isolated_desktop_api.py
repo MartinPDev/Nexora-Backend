@@ -57,7 +57,7 @@ login = request("POST", "/auth/login", expected=200, json={
 })
 headers = {"Authorization": "Bearer " + login["access_token"]}
 wallet = request("GET", "/desktop/portfolio", expected=200, headers=headers)
-assert wallet["cash"] == 1000.0 and wallet["financial_data_status"] == "cash_only"
+assert wallet["cash"] == 1000.0 and wallet["financial_data_status"] == "cash_and_reservations_only"
 repeat = request("GET", "/desktop/portfolio", expected=200, headers=headers)
 assert repeat["cash"] == 1000.0
 
@@ -71,6 +71,11 @@ bot = request("POST", "/desktop/bots", expected=201, headers=headers, json={
     "strategy_id": strategy["id"], "allocated_cash": 600, "risk_percent": 1,
 })
 assert bot["is_enabled"] is False and bot["mode"] == "paper"
+after_allocation = request("GET", "/desktop/portfolio", expected=200, headers=headers)
+assert after_allocation["cash"] == 400.0
+assert after_allocation["reserved_cash"] == 600.0
+assert after_allocation["paper_cash_balance"] == 1000.0
+assert after_allocation["total_value"] is None
 request("POST", "/desktop/bots", expected=409, headers=headers, json={
     "name": "Overallocated", "symbol": "BTC/USD", "timeframe": "15m",
     "strategy_id": strategy["id"], "allocated_cash": 500, "risk_percent": 1,
