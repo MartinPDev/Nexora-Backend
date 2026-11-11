@@ -27,6 +27,13 @@ class User(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
 
 
+class DesktopPaperBot(Base):
+    __tablename__ = "nexora_desktop_paper_bots"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    allocated_cash: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+
+
 class PaperWallet(Base):
     __tablename__ = "nexora_paper_wallets"
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), primary_key=True)
@@ -46,7 +53,7 @@ def load_portfolio_function():
     for arg in fn.args.args:
         arg.annotation = None
     fn.args.defaults = []
-    ns = {"PaperWallet": PaperWallet, "Decimal": Decimal, "IntegrityError": IntegrityError}
+    ns = {"PaperWallet": PaperWallet, "DesktopPaperBot": DesktopPaperBot, "Decimal": Decimal, "IntegrityError": IntegrityError}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[])), str(DESKTOP), "exec"), ns)
     return ns["desktop_portfolio"]
 
@@ -69,7 +76,8 @@ class PaperWalletSqliteIntegrationTests(unittest.TestCase):
         with self.Session() as db:
             result = self.portfolio(db, SimpleNamespace(id="alice"))
             self.assertEqual(result["cash"], 1000.0)
-            self.assertEqual(result["financial_data_status"], "cash_only")
+            self.assertEqual(result["financial_data_status"], "cash_and_reservations_only")
+            self.assertIsNone(result["total_value"])
             self.assertIsNone(result["unrealized_pnl"])
             self.assertEqual(db.query(PaperWallet).count(), 1)
 
@@ -89,6 +97,18 @@ class PaperWalletSqliteIntegrationTests(unittest.TestCase):
             self.portfolio(db, SimpleNamespace(id="bob"))
             self.assertEqual(db.query(PaperWallet).count(), 2)
             self.assertEqual({w.user_id for w in db.query(PaperWallet).all()}, {"alice", "bob"})
+
+    def test_reserved_cash_reduces_available_without_changing_wallet_balance(self):
+        with self.Session() as db:
+            self.portfolio(db, SimpleNamespace(id="alice"))
+            db.add(DesktopPaperBot(id="paper-1", user_id="alice", allocated_cash=Decimal("600")))
+            db.commit()
+        with self.Session() as db:
+            result = self.portfolio(db, SimpleNamespace(id="alice"))
+            self.assertEqual(result["cash"], 400)
+            self.assertEqual(result["reserved_cash"], 600)
+            self.assertEqual(result["paper_cash_balance"], 1000)
+            self.assertIsNone(result["total_value"])
 
     def test_wallet_persists_after_session_reopens(self):
         with self.Session() as db:
