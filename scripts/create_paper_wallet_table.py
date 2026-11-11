@@ -5,6 +5,7 @@ This migration does not access or modify Sniper Bot data or real exchange balanc
 import os
 from sqlalchemy import inspect, create_engine
 from app.core.config import get_settings
+from app.models.user import User  # register referenced users table
 from app.models.paper_wallet import PaperWallet
 
 
