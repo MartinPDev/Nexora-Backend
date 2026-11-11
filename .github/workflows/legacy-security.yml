@@ -17,6 +17,8 @@ on:
       - "scripts/create_desktop_paper_bot_table.py"
       - "scripts/check_paper_schema.py"
       - "tests/test_paper_schema_safety.py"
+      - "tests/test_desktop_financial_integrity.py"
+      - "app/core/database.py"
       - ".github/workflows/legacy-security.yml"
   push:
     branches:
@@ -43,3 +45,4 @@ jobs:
           python -m unittest discover -s tests -p "test_desktop_paper_bot_contract.py" -v
           python -m unittest discover -s tests -p "test_desktop_paper_bot_sqlite.py" -v
           python -m unittest discover -s tests -p "test_paper_schema_safety.py" -v
+          python -m unittest discover -s tests -p "test_desktop_financial_integrity.py" -v
