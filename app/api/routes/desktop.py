@@ -73,6 +73,12 @@ def desktop_strategies(
                 if item.stop_loss_percent is not None else None
             ),
             "is_ai_enabled": item.is_ai_enabled,
+            "mode": (item.config_json or {}).get("mode", "balanced"),
+            "min_score": (item.config_json or {}).get("min_score"),
+            "min_ai_probability": (item.config_json or {}).get("min_ai_probability"),
+            "trailing_stop_percent": (item.config_json or {}).get("trailing_stop_percent"),
+            "cooldown_hours": (item.config_json or {}).get("cooldown_hours"),
+            "partial_take_profit_percent": float(item.take_profit_percent) if item.take_profit_percent is not None else None,
         }
         for item in strategies
     ]}
