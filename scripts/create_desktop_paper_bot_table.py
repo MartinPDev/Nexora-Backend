@@ -2,6 +2,8 @@
 import os
 from sqlalchemy import inspect, create_engine
 from app.core.config import get_settings
+from app.models.user import User  # register referenced users table
+from app.models.strategy import Strategy  # register referenced strategies table
 from app.models.desktop_paper_bot import DesktopPaperBot
 
 
