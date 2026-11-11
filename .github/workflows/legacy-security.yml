@@ -46,3 +46,9 @@ jobs:
           python -m unittest discover -s tests -p "test_desktop_paper_bot_sqlite.py" -v
           python -m unittest discover -s tests -p "test_paper_schema_safety.py" -v
           python -m unittest discover -s tests -p "test_desktop_financial_integrity.py" -v
+      - name: Install exchange dependency for Linux reliability tests
+        run: python -m pip install "ccxt==4.5.67"
+      - name: Run Linux file-lock and restart recovery tests
+        run: |
+          python -m unittest discover -s tests -p "test_reliability.py" -v
+          python -m unittest discover -s tests -p "test_restart_recovery.py" -v
