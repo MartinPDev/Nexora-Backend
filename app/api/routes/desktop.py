@@ -3,7 +3,7 @@
 Only expose values supported by the existing database; no simulated balances
 or fabricated trade history are returned.
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -13,8 +13,10 @@ from app.models.bot import Bot
 from app.models.strategy import Strategy
 from app.models.rapid_scalper_trade import RapidScalperTrade
 from app.models.paper_wallet import PaperWallet
+from app.models.desktop_paper_bot import DesktopPaperBot
 from sqlalchemy.exc import IntegrityError
 from decimal import Decimal
+from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["desktop"])
 
@@ -29,16 +31,21 @@ def desktop_bots(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    bots = db.query(Bot).filter(Bot.user_id == current_user.id).all()
+    bots = db.query(DesktopPaperBot).filter(
+        DesktopPaperBot.user_id == current_user.id
+    ).all()
     return {"bots": [
         {
             "id": bot.id,
             "name": bot.name,
+            "symbol": bot.symbol,
+            "timeframe": bot.timeframe,
+            "allocated_cash": float(bot.allocated_cash),
+            "risk_percent": float(bot.risk_percent),
             "status": bot.status,
-            "is_enabled": bot.is_enabled,
+            "is_enabled": False,
             "strategy_id": bot.strategy_id,
-            "last_run_at": bot.last_run_at.isoformat() if bot.last_run_at else None,
-            "last_error": bot.last_error,
+            "mode": "paper",
         }
         for bot in bots
     ]}
@@ -194,3 +201,66 @@ def desktop_notifications(current_user: User = Depends(get_current_user)):
 def desktop_markets(current_user: User = Depends(get_current_user)):
     """Fail explicitly until a vetted Kraken public market-data feed is connected."""
     return {"markets": [], "data_status": "unavailable"}
+
+
+class DesktopPaperBotCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    strategy_id: str
+    symbol: str
+    timeframe: str
+    allocated_cash: Decimal = Field(gt=0, le=1000)
+    risk_percent: Decimal = Field(gt=0, le=10)
+
+
+@router.post("/desktop/bots", status_code=201)
+def create_desktop_paper_bot(
+    payload: DesktopPaperBotCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Configure an inert paper bot, never a live exchange bot."""
+    strategy = db.query(Strategy).filter(
+        Strategy.id == payload.strategy_id,
+        Strategy.user_id == current_user.id,
+    ).first()
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="Strategy not found.")
+    if payload.symbol != strategy.symbol or payload.timeframe != strategy.timeframe:
+        raise HTTPException(status_code=422, detail="Bot market and timeframe must match its strategy.")
+    wallet = db.query(PaperWallet).filter(
+        PaperWallet.user_id == current_user.id
+    ).first()
+    if wallet is None:
+        raise HTTPException(status_code=409, detail="Initialize your paper wallet in Portfolio first.")
+    existing = db.query(DesktopPaperBot).filter(
+        DesktopPaperBot.user_id == current_user.id
+    ).all()
+    reserved = sum((Decimal(str(bot.allocated_cash)) for bot in existing), Decimal("0"))
+    if reserved + payload.allocated_cash > Decimal(str(wallet.cash_balance)):
+        raise HTTPException(status_code=409, detail="Insufficient unallocated paper cash.")
+    row = DesktopPaperBot(
+        user_id=current_user.id,
+        strategy_id=strategy.id,
+        name=payload.name,
+        symbol=payload.symbol,
+        timeframe=payload.timeframe,
+        allocated_cash=payload.allocated_cash,
+        risk_percent=payload.risk_percent,
+        is_enabled=False,
+        status="configured",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {
+        "id": row.id,
+        "name": row.name,
+        "symbol": row.symbol,
+        "timeframe": row.timeframe,
+        "strategy_id": row.strategy_id,
+        "allocated_cash": float(row.allocated_cash),
+        "risk_percent": float(row.risk_percent),
+        "status": row.status,
+        "is_enabled": False,
+        "mode": "paper",
+    }
