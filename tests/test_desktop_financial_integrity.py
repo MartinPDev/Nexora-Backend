@@ -20,6 +20,12 @@ class PrivacyAndAccountingTests(unittest.TestCase):
         self.assertIn('"bots_running": 0', dashboard)
         self.assertNotIn("db.query(Bot)", dashboard)
 
+    def test_full_suite_linux_reliability_is_in_ci(self):
+        workflow = (ROOT / ".github/workflows/legacy-security.yml").read_text(encoding="utf-8")
+        self.assertIn('ccxt==4.5.67', workflow)
+        self.assertIn('test_reliability.py', workflow)
+        self.assertIn('test_restart_recovery.py', workflow)
+
     def test_wallet_reservations_are_user_scoped(self):
         source = (ROOT / "app/api/routes/desktop.py").read_text(encoding="utf-8")
         self.assertIn("DesktopPaperBot.user_id == current_user.id", source)
