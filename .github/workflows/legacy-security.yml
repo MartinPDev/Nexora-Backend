@@ -10,6 +10,7 @@ on:
       - "app/models/paper_wallet.py"
       - "scripts/create_paper_wallet_table.py"
       - "tests/test_desktop_api_contract.py"
+      - "tests/test_paper_wallet_sqlite.py"
       - ".github/workflows/legacy-security.yml"
   push:
     branches:
@@ -23,7 +24,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install configuration test dependencies
-        run: python -m pip install "pydantic>=2,<3" "pydantic-settings>=2,<3"
+        run: python -m pip install "pydantic>=2,<3" "pydantic-settings>=2,<3" "sqlalchemy>=2,<3"
       - name: Compile backend and security tests
         run: |
           python -m compileall -q app tests
@@ -32,3 +33,4 @@ jobs:
           python -m unittest discover -s tests -p "test_legacy_*.py" -v
           python -m unittest discover -s tests -p "test_production_config_security.py" -v
           python -m unittest discover -s tests -p "test_desktop_api_contract.py" -v
+          python -m unittest discover -s tests -p "test_paper_wallet_sqlite.py" -v
