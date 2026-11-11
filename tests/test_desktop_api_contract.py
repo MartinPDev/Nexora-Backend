@@ -35,7 +35,7 @@ class DesktopApiContractTests(unittest.TestCase):
                 and n.args and isinstance(n.args[0], ast.Name)
             ]
             self.assertIn("get_current_user", names, path)
-            if path in {"/desktop/bots", "/desktop/strategies", "/desktop/dashboard", "/desktop/trades"}:
+            if path in {"/desktop/bots", "/desktop/strategies", "/desktop/dashboard", "/desktop/trades", "/desktop/portfolio"}:
                 self.assertIn("get_db", names, path)
 
     def test_queries_filter_by_current_user(self):
@@ -45,6 +45,9 @@ class DesktopApiContractTests(unittest.TestCase):
         self.assertIn("RapidScalperTrade.username == current_user.username", source)
         self.assertIn('RapidScalperTrade.mode == "paper"', source)
         self.assertIn("RapidScalperTrade.closed_at.isnot(None)", source)
+        self.assertIn("PaperWallet.user_id == current_user.id", source)
+        self.assertIn('Decimal("1000.00")', source)
+        self.assertIn("with db.begin_nested()", source)
         self.assertIn('"financial_data_status": "unavailable"', source)
         self.assertIn('"portfolio_value": None', source)
 
