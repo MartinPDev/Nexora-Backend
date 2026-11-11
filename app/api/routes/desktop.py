@@ -12,6 +12,9 @@ from app.models.user import User
 from app.models.bot import Bot
 from app.models.strategy import Strategy
 from app.models.rapid_scalper_trade import RapidScalperTrade
+from app.models.paper_wallet import PaperWallet
+from sqlalchemy.exc import IntegrityError
+from decimal import Decimal
 
 router = APIRouter(tags=["desktop"])
 
@@ -96,16 +99,47 @@ def desktop_dashboard(
 
 
 @router.get("/desktop/portfolio")
-def desktop_portfolio(current_user: User = Depends(get_current_user)):
-    """Do not imply that an unintegrated paper ledger has zero funds."""
+def desktop_portfolio(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Persist a one-time $1,000 simulated cash wallet per account.
+
+    This is cash only. No positions, P&L or performance history are inferred.
+    The schema must be created by the explicit paper-wallet migration first.
+    """
+    wallet = db.query(PaperWallet).filter(
+        PaperWallet.user_id == current_user.id
+    ).first()
+    if wallet is None:
+        # Savepoint handles simultaneous first requests without rolling back
+        # the caller's surrounding transaction.
+        try:
+            with db.begin_nested():
+                db.add(PaperWallet(
+                    user_id=current_user.id,
+                    initial_balance=Decimal("1000.00"),
+                    cash_balance=Decimal("1000.00"),
+                    currency="USD",
+                ))
+                db.flush()
+        except IntegrityError:
+            pass
+        wallet = db.query(PaperWallet).filter(
+            PaperWallet.user_id == current_user.id
+        ).first()
+        if wallet is None:
+            raise RuntimeError("Paper wallet initialization failed.")
+        db.commit()
     return {
-        "total_value": None,
-        "cash": None,
+        "total_value": float(wallet.cash_balance),
+        "cash": float(wallet.cash_balance),
+        "currency": wallet.currency,
         "unrealized_pnl": None,
         "return_percent": None,
         "positions": [],
         "history": [],
-        "financial_data_status": "unavailable",
+        "financial_data_status": "cash_only",
     }
 
 
