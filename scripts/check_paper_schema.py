@@ -1,6 +1,6 @@
 """Check Nexora schema migration readiness without creating tables."""
 from sqlalchemy import inspect
-from app.core.database import engine
+from pydantic import ValidationError
 
 EXPECTED = {
     "users",
@@ -11,6 +11,13 @@ EXPECTED = {
 
 
 def main():
+    try:
+        from app.core.database import engine
+    except ValidationError as exc:
+        missing = [str(".".join(map(str, error["loc"]))) for error in exc.errors() if error["type"] == "missing"]
+        if missing:
+            raise SystemExit("Preflight blocked: missing required settings: " + ", ".join(missing)) from None
+        raise SystemExit("Preflight blocked: invalid application settings. Check local .env without sharing secrets.") from None
     print("Database dialect:", engine.dialect.name)
     print("Database name:", engine.url.database or "(none)")
     print("Database host:", engine.url.host or "(local)")
