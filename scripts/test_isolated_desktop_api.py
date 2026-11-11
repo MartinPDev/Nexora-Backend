@@ -38,7 +38,7 @@ app.include_router(desktop.router, prefix="/api/v1")
 
 suffix = uuid.uuid4().hex[:12]
 username = "nexora_it_" + suffix
-email = username + "@example.invalid"
+email = username + "@example.com"
 password = secrets.token_urlsafe(32)
 client = TestClient(app)
 
