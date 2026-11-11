@@ -43,7 +43,7 @@ class DesktopApiContractTests(unittest.TestCase):
         self.assertIn("Bot.user_id == current_user.id", source)
         self.assertIn("Strategy.user_id == current_user.id", source)
         self.assertIn("RapidScalperTrade.username == current_user.username", source)
-        self.assertIn('RapidScalperTrade.mode == "paper"', source)
+        self.assertIn('RapidScalperTrade.status == "paper_executed"', source)
         self.assertIn("RapidScalperTrade.closed_at.isnot(None)", source)
         self.assertIn("PaperWallet.user_id == current_user.id", source)
         self.assertIn('"paper_cash": float(wallet.cash_balance) if wallet else None', source)
