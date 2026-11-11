@@ -14,6 +14,7 @@ class SchemaSafetyTests(unittest.TestCase):
                 ast.parse(source)
                 self.assertIn('os.getenv("NEXORA_CONFIRM_SCHEMA_CREATE") != "YES"', source)
                 self.assertIn("Schema creation blocked", source)
+                self.assertIn('connect_args={"connect_timeout": 5}', source)
 
     def test_preflight_does_not_write_database(self):
         source = (ROOT / "check_paper_schema.py").read_text(encoding="utf-8")
