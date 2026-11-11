@@ -144,15 +144,22 @@ def desktop_portfolio(
         if wallet is None:
             raise RuntimeError("Paper wallet initialization failed.")
         db.commit()
+    allocated = db.query(DesktopPaperBot).filter(
+        DesktopPaperBot.user_id == current_user.id
+    ).all()
+    reserved = sum((Decimal(str(bot.allocated_cash)) for bot in allocated), Decimal("0"))
+    available = Decimal(str(wallet.cash_balance)) - reserved
     return {
-        "total_value": float(wallet.cash_balance),
-        "cash": float(wallet.cash_balance),
+        "total_value": None,
+        "cash": float(available),
+        "paper_cash_balance": float(wallet.cash_balance),
+        "reserved_cash": float(reserved),
         "currency": wallet.currency,
         "unrealized_pnl": None,
         "return_percent": None,
         "positions": [],
         "history": [],
-        "financial_data_status": "cash_only",
+        "financial_data_status": "cash_and_reservations_only",
     }
 
 
