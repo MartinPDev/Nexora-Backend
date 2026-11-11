@@ -40,7 +40,7 @@ class DesktopApiContractTests(unittest.TestCase):
 
     def test_queries_filter_by_current_user(self):
         source = DESKTOP.read_text(encoding="utf-8")
-        self.assertIn("Bot.user_id == current_user.id", source)
+        self.assertIn("DesktopPaperBot.user_id == current_user.id", source)
         self.assertIn("Strategy.user_id == current_user.id", source)
         self.assertIn("RapidScalperTrade.username == current_user.username", source)
         self.assertIn('RapidScalperTrade.status == "paper_executed"', source)
