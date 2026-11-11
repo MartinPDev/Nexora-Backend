@@ -84,13 +84,13 @@ def desktop_dashboard(
     current_user: User = Depends(get_current_user),
 ):
     """Account-scoped bot overview; financial metrics require a real paper ledger."""
-    bots = db.query(Bot).filter(Bot.user_id == current_user.id).all()
+    bots = db.query(DesktopPaperBot).filter(DesktopPaperBot.user_id == current_user.id).all()
     wallet = db.query(PaperWallet).filter(
         PaperWallet.user_id == current_user.id
     ).first()
     return {
         "bots_total": len(bots),
-        "bots_running": sum(bool(bot.is_enabled) for bot in bots),
+        "bots_running": 0,  # Desktop paper bots are configurations, not running workers.
         # Cash is a verified wallet field; portfolio equity also requires
         # positions and must not be inferred from cash alone.
         "paper_cash": float(wallet.cash_balance) if wallet else None,
