@@ -322,14 +322,14 @@ def activate_user_plan(username: str, plan: str):
             "max_bots": 3,
             "max_positions": 5,
             "paper_trading": True,
-            "live_trading": True,
+            "live_trading": False,
             "advanced_ai": True
         },
         "premium": {
             "max_bots": 10,
             "max_positions": 15,
             "paper_trading": True,
-            "live_trading": True,
+            "live_trading": False,
             "advanced_ai": True
         }
     }
