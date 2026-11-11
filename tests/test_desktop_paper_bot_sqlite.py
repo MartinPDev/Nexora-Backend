@@ -7,10 +7,14 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
-from pydantic import BaseModel, Field
-from fastapi import HTTPException
 from sqlalchemy import Boolean, ForeignKey, Numeric, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+
+class HTTPException(Exception):
+    def __init__(self, status_code, detail):
+        self.status_code = status_code
+        super().__init__(detail)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "app" / "api" / "routes" / "desktop.py"
