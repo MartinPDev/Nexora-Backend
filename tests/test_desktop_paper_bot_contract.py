@@ -36,6 +36,13 @@ class DesktopPaperBotContractTests(unittest.TestCase):
         self.assertIn("is_enabled=False", body)
         self.assertIn('status="configured"', body)
 
+    def test_allocation_check_locks_wallet_row(self):
+        tree = ast.parse(SOURCE)
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "create_desktop_paper_bot")
+        body = ast.get_source_segment(SOURCE, fn)
+        self.assertIn("PaperWallet.user_id == current_user.id", body)
+        self.assertIn(".with_for_update().first()", body)
+
     def test_schema_has_no_exchange_key_field(self):
         source = (ROOT / "app/models/desktop_paper_bot.py").read_text(encoding="utf-8")
         self.assertNotIn("exchange_key_id", source)
