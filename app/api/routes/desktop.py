@@ -227,9 +227,11 @@ def create_desktop_paper_bot(
         raise HTTPException(status_code=404, detail="Strategy not found.")
     if payload.symbol != strategy.symbol or payload.timeframe != strategy.timeframe:
         raise HTTPException(status_code=422, detail="Bot market and timeframe must match its strategy.")
+    # Serialize allocation decisions per wallet on databases supporting
+    # SELECT FOR UPDATE (PostgreSQL). SQLite does not provide row locks.
     wallet = db.query(PaperWallet).filter(
         PaperWallet.user_id == current_user.id
-    ).first()
+    ).with_for_update().first()
     if wallet is None:
         raise HTTPException(status_code=409, detail="Initialize your paper wallet in Portfolio first.")
     existing = db.query(DesktopPaperBot).filter(
