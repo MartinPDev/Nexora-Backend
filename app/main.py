@@ -307,7 +307,13 @@ def get_user_billing(username: str):
     with open(BILLING_FILE, "r") as f:
         data = json.load(f)
 
-    return data.get(username, get_default_billing(username))
+    account = data.get(username, get_default_billing(username))
+    # Existing billing JSON may contain historical live-trading entitlements.
+    # Never mutate the stored record during reads; deny the capability at runtime.
+    account = dict(account)
+    account["features"] = dict(account.get("features") or {})
+    account["features"]["live_trading"] = False
+    return account
 
 def activate_user_plan(username: str, plan: str):
     plans = {
