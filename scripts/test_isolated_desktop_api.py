@@ -56,6 +56,14 @@ login = request("POST", "/auth/login", expected=200, json={
     "username_or_email": username, "password": password,
 })
 headers = {"Authorization": "Bearer " + login["access_token"]}
+# Authorization must reject unauthenticated requests, without creating other accounts.
+request("GET", "/desktop/bots", expected=401)
+request("GET", "/desktop/portfolio", expected=401)
+request("GET", "/desktop/trades", expected=401)
+request("POST", "/desktop/bots", expected=401, json={
+    "name": "Unauthorized", "symbol": "BTC/USD", "timeframe": "15m",
+    "strategy_id": str(uuid.uuid4()), "allocated_cash": 100, "risk_percent": 1,
+})
 wallet = request("GET", "/desktop/portfolio", expected=200, headers=headers)
 assert wallet["cash"] == 1000.0 and wallet["financial_data_status"] == "cash_and_reservations_only"
 repeat = request("GET", "/desktop/portfolio", expected=200, headers=headers)
@@ -82,6 +90,8 @@ request("POST", "/desktop/bots", expected=409, headers=headers, json={
 })
 bots = request("GET", "/desktop/bots", expected=200, headers=headers)
 assert len(bots["bots"]) == 1
+summary = request("GET", "/desktop/dashboard", expected=200, headers=headers)
+assert summary["bots_total"] == 1 and summary["bots_running"] == 0
 print("PASS: registration, login, $1000 wallet, strategy, inactive bot, allocation rejection")
 print("Test account retained for audit:", username)
 print("No trading workers or exchange connections started.")
