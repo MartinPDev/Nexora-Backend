@@ -46,6 +46,8 @@ class DesktopApiContractTests(unittest.TestCase):
         self.assertIn('RapidScalperTrade.mode == "paper"', source)
         self.assertIn("RapidScalperTrade.closed_at.isnot(None)", source)
         self.assertIn("PaperWallet.user_id == current_user.id", source)
+        self.assertIn('"paper_cash": float(wallet.cash_balance) if wallet else None', source)
+        self.assertIn('"portfolio_value": None', source)
         self.assertIn('Decimal("1000.00")', source)
         self.assertIn("with db.begin_nested()", source)
         self.assertIn('"financial_data_status": "unavailable"', source)
