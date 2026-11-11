@@ -132,6 +132,23 @@ class DesktopPaperBotSqliteTests(unittest.TestCase):
                 self.create(self.payload(symbol="ETH/USD"), db, SimpleNamespace(id="alice"))
             self.assertEqual(caught.exception.status_code, 422)
 
+    def test_cross_account_bot_records_do_not_consume_other_wallet(self):
+        with self.Session() as db:
+            self.create(self.payload(strategy_id="bob-strategy", allocated_cash=Decimal("900")),
+                        db, SimpleNamespace(id="bob"))
+            result = self.create(self.payload(allocated_cash=Decimal("900")),
+                                 db, SimpleNamespace(id="alice"))
+            self.assertEqual(result["allocated_cash"], 900)
+            self.assertEqual(db.query(DesktopPaperBot).count(), 2)
+
+    def test_rejects_bot_without_initialized_wallet(self):
+        with self.Session() as db:
+            db.query(PaperWallet).filter(PaperWallet.user_id == "alice").delete()
+            db.commit()
+            with self.assertRaises(HTTPException) as caught:
+                self.create(self.payload(), db, SimpleNamespace(id="alice"))
+            self.assertEqual(caught.exception.status_code, 409)
+
     def test_allocations_are_separate_by_account(self):
         with self.Session() as db:
             self.create(self.payload(allocated_cash=Decimal("900")), db, SimpleNamespace(id="alice"))
