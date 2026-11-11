@@ -7,6 +7,8 @@ on:
       - "tests/test_production_config_security.py"
       - "app/core/config.py"
       - "app/api/routes/desktop.py"
+      - "app/models/paper_wallet.py"
+      - "scripts/create_paper_wallet_table.py"
       - "tests/test_desktop_api_contract.py"
       - ".github/workflows/legacy-security.yml"
   push:
