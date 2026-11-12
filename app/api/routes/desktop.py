@@ -241,6 +241,87 @@ def desktop_paper_preview(
     }
 
 
+# Public Kraken OHLC data only: no API keys, orders, or trading workers.
+_KRAKEN_PAIRS = {
+    "BTC/USD": "XBTUSD", "ETH/USD": "ETHUSD", "XRP/USD": "XRPUSD",
+    "SOL/USD": "SOLUSD", "ADA/USD": "ADAUSD", "DOGE/USD": "DOGEUSD",
+    "HBAR/USD": "HBARUSD", "XLM/USD": "XLMUSD", "ICP/USD": "ICPUSD",
+}
+_KRAKEN_INTERVALS = {
+    "1m": 1, "5m": 5, "15m": 15, "30m": 30,
+    "1h": 60, "4h": 240, "1d": 1440,
+}
+
+
+def _fetch_kraken_candles(pair: str, interval: int):
+    """Fetch a strictly allowlisted public Kraken OHLC feed."""
+    import json
+    from urllib.parse import urlencode
+    from urllib.request import Request, urlopen
+
+    url = "https://api.kraken.com/0/public/OHLC?" + urlencode({
+        "pair": pair, "interval": interval,
+    })
+    request = Request(url, headers={"User-Agent": "NexoraDesktopBeta/0.3.3"})
+    with urlopen(request, timeout=10) as response:
+        payload = json.load(response)
+    if not isinstance(payload, dict) or payload.get("error"):
+        raise ValueError("Kraken rejected the candle request.")
+    results = payload.get("result")
+    if not isinstance(results, dict):
+        raise ValueError("Kraken returned an invalid OHLC response.")
+    rows = next((value for key, value in results.items()
+                 if key != "last" and isinstance(value, list)), None)
+    if rows is None:
+        raise ValueError("Kraken returned no OHLC series.")
+    candles = []
+    previous = -1
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 7:
+            raise ValueError("Kraken returned an invalid OHLC row.")
+        timestamp = int(row[0])
+        o, h, l, c = [float(value) for value in row[1:5]]
+        volume = float(row[6])
+        from math import isfinite
+        if (not all(isfinite(value) for value in (o, h, l, c, volume))
+                or min(o, h, l, c) <= 0 or volume < 0
+                or l > min(o, c) or h < max(o, c)
+                or timestamp <= previous):
+            raise ValueError("Kraken OHLC data failed validation.")
+        candles.append({
+            "timestamp": timestamp, "open": o, "high": h,
+            "low": l, "close": c, "volume": volume,
+        })
+        previous = timestamp
+    return candles
+
+
+@router.get("/desktop/market-candles")
+async def desktop_market_candles(
+    symbol: str,
+    timeframe: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Authenticated, validated Kraken public candles for the original charts."""
+    import asyncio
+    if symbol not in _KRAKEN_PAIRS or timeframe not in _KRAKEN_INTERVALS:
+        raise HTTPException(status_code=422, detail="Unsupported Kraken market or timeframe.")
+    try:
+        candles = await asyncio.to_thread(
+            _fetch_kraken_candles,
+            _KRAKEN_PAIRS[symbol],
+            _KRAKEN_INTERVALS[timeframe],
+        )
+    except (ValueError, OSError, TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail="Kraken market candles unavailable.") from exc
+    return {
+        "symbol": symbol, "timeframe": timeframe,
+        "source": "kraken_public_ohlc",
+        "timestamp_unit": "seconds",
+        "candles": candles,
+    }
+
+
 @router.get("/desktop/trades")
 def desktop_trades(
     db: Session = Depends(get_db),
