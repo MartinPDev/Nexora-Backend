@@ -49,6 +49,7 @@ class DesktopWalletContractTest(unittest.TestCase):
         self.assertIn("PaperWallet", source)
         self.assertIn('"equity": None', source)
         self.assertIn('"pnl": None', source)
+        self.assertIn('"open_positions": len(portfolio["positions"])', source)
 
 
 if __name__ == "__main__":
