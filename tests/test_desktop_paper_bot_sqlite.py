@@ -125,6 +125,19 @@ class DesktopPaperBotSqliteTests(unittest.TestCase):
             self.assertEqual(result["mode"], "paper")
             self.assertEqual(db.query(DesktopPaperBot).count(), 1)
 
+    def test_existing_position_commitment_is_not_reserved_twice(self):
+        with self.Session() as db:
+            self.create(self.payload(allocated_cash=Decimal("600")), db, SimpleNamespace(id="alice"))
+            bot = db.query(DesktopPaperBot).filter(DesktopPaperBot.user_id == "alice").first()
+            wallet = db.get(PaperWallet, "alice")
+            wallet.cash_balance = Decimal("899.74")
+            db.add(PaperPreviewPosition(id="p1", user_id="alice", bot_id=bot.id,
+                                        principal=Decimal("100"), entry_fee=Decimal("0.26"), status="OPEN"))
+            db.commit()
+        with self.Session() as db:
+            self.create(self.payload(allocated_cash=Decimal("400")), db, SimpleNamespace(id="alice"))
+            self.assertEqual(db.query(DesktopPaperBot).count(), 2)
+
     def test_rejects_overallocation_without_persisting(self):
         with self.Session() as db:
             self.create(self.payload(allocated_cash=Decimal("700")), db, SimpleNamespace(id="alice"))
