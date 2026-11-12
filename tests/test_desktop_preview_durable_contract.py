@@ -26,13 +26,13 @@ class DurablePreviewContract(unittest.TestCase):
     def test_scan_uses_completed_kraken_candles_and_crossover(self):
         s = body("scan")
         for required in ("rows[:-1]", "_fetch_kraken_candles", "previous_fast <= previous_slow",
-                         "fast > slow", "sha256", "PaperPreviewProposal", "timedelta(minutes=5)"):
+                         "fast > slow", "candle feed is stale", "sha256", "PaperPreviewProposal", "timedelta(minutes=5)"):
             self.assertIn(required, s)
 
     def test_settlement_locks_wallet_and_position_and_uses_fees(self):
         s = body("settle")
         for required in ("with_for_update()", "rows[:-1]", "STOP_OR_TRAIL",
-                         "TAKE_PROFIT", "MAX_HOLD", "exit_fee", "wallet.cash_balance",
+                         "TAKE_PROFIT", "MAX_HOLD", 'min(stop, D(str(candle["open"])))', "exit_fee", "wallet.cash_balance",
                          'position.status = "CLOSED"', "db.commit()"):
             self.assertIn(required, s)
 
