@@ -126,6 +126,21 @@ class PaperWalletSqliteIntegrationTests(unittest.TestCase):
             self.assertEqual(result["paper_cash_balance"], 1000)
             self.assertIsNone(result["total_value"])
 
+    def test_open_position_reduces_remaining_reservation_without_double_counting(self):
+        with self.Session() as db:
+            self.portfolio(db, SimpleNamespace(id="alice"))
+            db.add(DesktopPaperBot(id="paper-1", user_id="alice", allocated_cash=Decimal("600")))
+            wallet = db.get(PaperWallet, "alice")
+            wallet.cash_balance = Decimal("899.74")
+            db.add(PaperPreviewPosition(id="pos-1", user_id="alice", bot_id="paper-1",
+                                        principal=Decimal("100"), entry_fee=Decimal("0.26"), status="OPEN"))
+            db.commit()
+        with self.Session() as db:
+            result = self.portfolio(db, SimpleNamespace(id="alice"))
+            self.assertAlmostEqual(result["reserved_cash"], 499.74)
+            self.assertAlmostEqual(result["cash"], 400)
+            self.assertAlmostEqual(result["paper_cash_balance"], 899.74)
+
     def test_wallet_persists_after_session_reopens(self):
         with self.Session() as db:
             self.portfolio(db, SimpleNamespace(id="alice"))
