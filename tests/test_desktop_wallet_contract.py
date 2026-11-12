@@ -27,6 +27,17 @@ class DesktopWalletContractTest(unittest.TestCase):
         self.assertIn("PaperPreviewPosition.user_id == user.id", body)
         self.assertIn('"available": True', body)
 
+    def test_settled_preview_trades_appear_in_owner_scoped_history(self):
+        source = ROUTES.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "desktop_trades")
+        segment = ast.get_source_segment(source, fn)
+        self.assertIn("PaperPreviewPosition.user_id == current_user.id", segment)
+        self.assertIn('PaperPreviewPosition.status == "CLOSED"', segment)
+        self.assertIn('"source": "paper_preview"', segment)
+        self.assertIn('"source": "rapid_scalper_paper"', segment)
+        self.assertIn("reverse=True", segment)
+
     def test_wallet_route_exists_and_is_authenticated(self):
         tree = ast.parse(ROUTES.read_text(encoding="utf-8"))
         fn = next(
