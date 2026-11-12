@@ -5,7 +5,7 @@ import unittest
 import uuid
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace, ModuleType
 
 from sqlalchemy import Boolean, ForeignKey, Numeric, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -57,6 +57,16 @@ class DesktopPaperBot(Base):
     status: Mapped[str] = mapped_column(String, default="configured", nullable=False)
 
 
+class PaperPreviewPosition(Base):
+    __tablename__ = "nexora_preview_positions"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    bot_id: Mapped[str] = mapped_column(String, nullable=False)
+    principal: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    entry_fee: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+
+
 def load_create():
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "create_desktop_paper_bot")
@@ -71,6 +81,10 @@ def load_create():
         "Decimal": Decimal,
         "HTTPException": HTTPException,
     }
+    import sys
+    fake_preview = ModuleType("app.models.paper_preview")
+    fake_preview.PaperPreviewPosition = PaperPreviewPosition
+    sys.modules.setdefault("app.models.paper_preview", fake_preview)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[])), str(SOURCE), "exec"), ns)
     return ns["create_desktop_paper_bot"]
 
