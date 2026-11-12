@@ -48,6 +48,9 @@ class PaperPreviewPosition(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
     bot_id: Mapped[str] = mapped_column(String, nullable=False)
+    symbol: Mapped[str] = mapped_column(String, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 12), nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(24, 10), nullable=False)
     principal: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
     entry_fee: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
@@ -133,6 +136,7 @@ class PaperWalletSqliteIntegrationTests(unittest.TestCase):
             wallet = db.get(PaperWallet, "alice")
             wallet.cash_balance = Decimal("899.74")
             db.add(PaperPreviewPosition(id="pos-1", user_id="alice", bot_id="paper-1",
+                                        symbol="BTC/USD", quantity=Decimal("0.01"), entry_price=Decimal("10000"),
                                         principal=Decimal("100"), entry_fee=Decimal("0.26"), status="OPEN"))
             db.commit()
         with self.Session() as db:
