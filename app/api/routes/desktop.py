@@ -208,7 +208,7 @@ def desktop_wallet(
         "equity": None,
         "pnl": None,
         "pnl_percent": None,
-        "open_positions": None,
+        "open_positions": len(portfolio["positions"]),
         "currency": wallet.currency,
         "mode": "paper",
         "financial_data_status": "cash_and_reservations_only",
