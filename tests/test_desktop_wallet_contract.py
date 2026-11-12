@@ -13,6 +13,24 @@ ROUTES = ROOT / "app" / "api" / "routes" / "desktop.py"
 
 
 class DesktopWalletContractTest(unittest.TestCase):
+    def test_preview_is_read_only_and_account_scoped(self):
+        source = ROUTES.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        fn = next(
+            (node for node in tree.body
+             if isinstance(node, ast.FunctionDef) and node.name == "desktop_paper_preview"),
+            None,
+        )
+        self.assertIsNotNone(fn)
+        segment = ast.get_source_segment(source, fn)
+        self.assertIn('"/desktop/paper-preview"', segment)
+        self.assertIn("get_current_user", segment)
+        self.assertIn("DesktopPaperBot.user_id == current_user.id", segment)
+        self.assertIn('"available": False', segment)
+        self.assertIn('"proposals": []', segment)
+        self.assertIn('"positions": []', segment)
+        self.assertIn('"trades": []', segment)
+
     def test_wallet_route_exists_and_is_authenticated(self):
         tree = ast.parse(ROUTES.read_text(encoding="utf-8"))
         fn = next(
