@@ -76,7 +76,8 @@ def read_preview(db: Session = Depends(get_db), user: User = Depends(get_current
             "permission": {"state": "APPROVAL_REQUIRED" if b.id in enrollments else "NOT_ENROLLED"},
             "proposals": [serial_proposal(p) for p in proposals if p.bot_id == b.id],
             "committed_gross": float(sum((D(p.principal) + D(p.entry_fee) for p in opened if p.bot_id == b.id), D(0))),
-            "observer": {"enabled": bool(enrollments[b.id].observer_enabled) if b.id in enrollments else False,
+            "observer": {"available": __import__("os").getenv("NEXORA_PREVIEW_WORKER") == "YES",
+                         "enabled": bool(enrollments[b.id].observer_enabled) if b.id in enrollments else False,
                          "last_result": enrollments[b.id].last_action if b.id in enrollments else "OFF",
                          "last_reason": enrollments[b.id].last_reason if b.id in enrollments else "Not enrolled."},
             "last_decision": ({"action": enrollments[b.id].last_action, "reason": enrollments[b.id].last_reason}
