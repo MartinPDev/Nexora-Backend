@@ -15,6 +15,9 @@ class PaperPreviewEnrollment(Base):
     bot_id: Mapped[str] = mapped_column(String, ForeignKey("nexora_desktop_paper_bots.id"), primary_key=True)
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False, index=True)
     observer_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_action: Mapped[str] = mapped_column(String(20), nullable=True)
+    last_reason: Mapped[str] = mapped_column(Text, nullable=True)
+    last_scanned_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
