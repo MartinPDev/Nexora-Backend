@@ -11,6 +11,7 @@ on:
       - "scripts/create_paper_wallet_table.py"
       - "tests/test_desktop_api_contract.py"
       - "tests/test_paper_wallet_sqlite.py"
+      - "tests/test_preview_approval_sqlite.py"
       - "tests/test_desktop_paper_bot_contract.py"
       - "tests/test_desktop_paper_bot_sqlite.py"
       - "app/models/desktop_paper_bot.py"
@@ -42,6 +43,7 @@ jobs:
           python -m unittest discover -s tests -p "test_production_config_security.py" -v
           python -m unittest discover -s tests -p "test_desktop_api_contract.py" -v
           python -m unittest discover -s tests -p "test_paper_wallet_sqlite.py" -v
+          python -m unittest discover -s tests -p "test_preview_approval_sqlite.py" -v
           python -m unittest discover -s tests -p "test_desktop_paper_bot_contract.py" -v
           python -m unittest discover -s tests -p "test_desktop_paper_bot_sqlite.py" -v
           python -m unittest discover -s tests -p "test_paper_schema_safety.py" -v
