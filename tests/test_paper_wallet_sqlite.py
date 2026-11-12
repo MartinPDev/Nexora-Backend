@@ -8,7 +8,8 @@ import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace, ModuleType
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, String, Numeric, ForeignKey, text
 from sqlalchemy.exc import IntegrityError
@@ -42,6 +43,16 @@ class PaperWallet(Base):
     currency: Mapped[str] = mapped_column(String, nullable=False)
 
 
+class PaperPreviewPosition(Base):
+    __tablename__ = "nexora_preview_positions"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    bot_id: Mapped[str] = mapped_column(String, nullable=False)
+    principal: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    entry_fee: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+
+
 def load_portfolio_function():
     tree = ast.parse(DESKTOP.read_text(encoding="utf-8"))
     matches = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "desktop_portfolio"]
@@ -54,6 +65,11 @@ def load_portfolio_function():
         arg.annotation = None
     fn.args.defaults = []
     ns = {"PaperWallet": PaperWallet, "DesktopPaperBot": DesktopPaperBot, "Decimal": Decimal, "IntegrityError": IntegrityError}
+    # Isolate the route from application settings and production DB imports.
+    fake_preview = ModuleType("app.models.paper_preview")
+    fake_preview.PaperPreviewPosition = PaperPreviewPosition
+    import sys
+    sys.modules.setdefault("app.models.paper_preview", fake_preview)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[])), str(DESKTOP), "exec"), ns)
     return ns["desktop_portfolio"]
 
