@@ -80,6 +80,7 @@ from app.api.routes.auth import router as auth_router
 from app.api.routes.users import router as users_router
 from app.api.routes.exchanges import router as exchanges_router
 from app.api.routes.exchange_test import router as exchange_test_route
+from app.api.routes.desktop import router as desktop_router
 
 
 class AuthRequest(BaseModel):
@@ -171,6 +172,7 @@ app.include_router(strategies_router, prefix="/api/v1")
 app.include_router(bots_router, prefix="/api/v1")
 app.include_router(exchanges_router, prefix="/api/v1")
 app.include_router(exchange_test_route, prefix="/api/v1")
+app.include_router(desktop_router, prefix="/api/v1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins.split(","),
@@ -305,7 +307,13 @@ def get_user_billing(username: str):
     with open(BILLING_FILE, "r") as f:
         data = json.load(f)
 
-    return data.get(username, get_default_billing(username))
+    account = data.get(username, get_default_billing(username))
+    # Existing billing JSON may contain historical live-trading entitlements.
+    # Never mutate the stored record during reads; deny the capability at runtime.
+    account = dict(account)
+    account["features"] = dict(account.get("features") or {})
+    account["features"]["live_trading"] = False
+    return account
 
 def activate_user_plan(username: str, plan: str):
     plans = {
@@ -320,14 +328,14 @@ def activate_user_plan(username: str, plan: str):
             "max_bots": 3,
             "max_positions": 5,
             "paper_trading": True,
-            "live_trading": True,
+            "live_trading": False,
             "advanced_ai": True
         },
         "premium": {
             "max_bots": 10,
             "max_positions": 15,
             "paper_trading": True,
-            "live_trading": True,
+            "live_trading": False,
             "advanced_ai": True
         }
     }
@@ -721,7 +729,7 @@ def health_check():
     return health_snapshot()
 
 @app.get("/dashboard/{username}")
-def get_dashboard(username: str):
+def get_dashboard(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(DASHBOARD_FILE):
         return {
             "error": "Dashboard file not found",
@@ -740,12 +748,12 @@ def get_dashboard(username: str):
     return data
 
 @app.get("/bots/{username}")
-def get_bots(username: str):
+def get_bots(username: str, _owner: str = Depends(require_legacy_account_owner)):
     bots = load_bots()
     return bots.get(username, [])
 
 @app.get("/asset-bot-positions/{username}")
-def get_asset_bot_positions(username: str):
+def get_asset_bot_positions(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(ASSET_BOT_POSITIONS_FILE):
         return []
 
@@ -795,7 +803,7 @@ def get_asset_bot_positions(username: str):
 
 
 @app.post("/asset-bot-close-position/{username}/{bot_id}")
-def close_asset_bot_position(username: str, bot_id: str):
+def close_asset_bot_position(username: str, bot_id: str, _owner: str = Depends(require_legacy_account_owner)):
     from app.asset_bot_engine import close_existing_paper_position
 
     trade = close_existing_paper_position(username, bot_id)
@@ -822,7 +830,7 @@ def close_asset_bot_position(username: str, bot_id: str):
     }
 
 @app.get("/bot-control/{username}")
-def get_bot_control(username: str):
+def get_bot_control(username: str, _owner: str = Depends(require_legacy_account_owner)):
     try:
         if not os.path.exists(CONTROL_FILE):
             return {
@@ -846,7 +854,7 @@ def get_bot_control(username: str):
         }
 
 @app.get("/settings/{username}")
-def get_settings(username: str):
+def get_settings(username: str, _owner: str = Depends(require_legacy_account_owner)):
     default_settings = {
         "username": username,
         "risk_percent": 1.0,
@@ -871,7 +879,7 @@ def get_settings(username: str):
     return data
 
 @app.get("/strategies/{username}")
-def get_strategies(username: str):
+def get_strategies(username: str, _owner: str = Depends(require_legacy_account_owner)):
     strategies = load_strategies()
     user_strategies = strategies.get(username, [])
     bots = load_bots().get(username, [])
@@ -903,7 +911,7 @@ def _strategy_number(payload, field, default, minimum, maximum):
 
 
 @app.post("/strategies/{username}/create")
-def create_strategy(username: str, strategy: dict):
+def create_strategy(username: str, strategy: dict, _owner: str = Depends(require_legacy_account_owner)):
     strategies = load_strategies()
     user_strategies = strategies.setdefault(username, [])
 
@@ -940,7 +948,7 @@ def create_strategy(username: str, strategy: dict):
 
 
 @app.delete("/strategies/{username}/{strategy_id}")
-def delete_strategy(username: str, strategy_id: str):
+def delete_strategy(username: str, strategy_id: str, _owner: str = Depends(require_legacy_account_owner)):
     bots = load_bots().get(username, [])
     assigned = [bot for bot in bots if bot.get("strategy_id") == strategy_id]
     if assigned:
@@ -960,7 +968,7 @@ def delete_strategy(username: str, strategy_id: str):
     return {"success": True, "deleted_strategy_id": strategy_id}
 
 @app.post("/settings/{username}")
-def save_settings(username: str, settings: dict):
+def save_settings(username: str, settings: dict, _owner: str = Depends(require_legacy_account_owner)):
     settings["username"] = username
 
     with open(SETTINGS_FILE, "w") as f:
@@ -1390,8 +1398,18 @@ async function signupBasic() {
 """
 
 
+def require_legacy_account_owner(username: str, x_session_token: str = Header(None)):
+    """Fail closed unless the legacy session belongs to the requested account."""
+    owner = SESSIONS.get(x_session_token or "")
+    if not owner:
+        raise HTTPException(status_code=401, detail="Authenticated session required.")
+    if owner != username.strip().lower():
+        raise HTTPException(status_code=403, detail="Account access denied.")
+    return owner
+
+
 @app.get("/billing/{username}")
-def get_billing(username: str):
+def get_billing(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(BILLING_FILE):
         return get_default_billing(username)
 
@@ -1402,58 +1420,30 @@ def get_billing(username: str):
 
 @app.post("/billing/{username}/set-plan/{plan}")
 def set_plan(username: str, plan: str):
-    plans = {
-        "free": {
-            "max_bots": 1,
-            "max_positions": 2,
-            "paper_trading": True,
-            "live_trading": False,
-            "advanced_ai": False
-        },
-        "basic": {
-            "max_bots": 1,
-            "max_positions": 2,
-            "paper_trading": True,
-            "live_trading": False,
-            "advanced_ai": False
-        },
+    """Legacy endpoint disabled: entitlements require verified payment processing."""
+    raise HTTPException(status_code=403, detail="Plan changes require verified billing.")
 
-        "pro": {
-            "max_bots": 3,
-            "max_positions": 5,
-            "paper_trading": True,
-            "live_trading": True,
-            "advanced_ai": True
-        },
-        "premium": {
-            "max_bots": 10,
-            "max_positions": 15,
-            "paper_trading": True,
-            "live_trading": True,
-            "advanced_ai": True
-        }
-    }
-    if plan not in plans:
-        return {"error": "Invalid plan"}
-    billing = {}
+def legacy_checkout_return_url(username: str):
+    """Use a configured public origin, never localhost in production."""
+    from urllib.parse import quote, urlparse
+    origin = os.getenv("NEXORA_PUBLIC_APP_ORIGIN", "").strip().rstrip("/")
+    if not origin:
+        if settings.app_env.lower() in {"production", "prod"}:
+            raise HTTPException(status_code=503, detail="Public application origin is not configured.")
+        origin = "http://127.0.0.1:8000"
+    parsed = urlparse(origin)
+    if parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise HTTPException(status_code=503, detail="Invalid public application origin.")
+    if settings.app_env.lower() in {"production", "prod"}:
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise HTTPException(status_code=503, detail="Public application origin must use HTTPS.")
+    elif parsed.scheme not in {"https", "http"} or not parsed.hostname:
+        raise HTTPException(status_code=503, detail="Invalid public application origin.")
+    return origin + "/dashboard-ui/" + quote(username, safe="")
 
-    if os.path.exists(BILLING_FILE):
-        with open(BILLING_FILE, "r") as f:
-            billing = json.load(f)
-
-    billing[username] = {
-        "username": username,
-        "plan": plan,
-        "subscription_status": "active" if plan != "free" else "inactive",
-        "features": plans[plan]
-    }
-    with open(BILLING_FILE, "w") as f:
-        json.dump(billing, f, indent=2)
-
-    return billing[username]
 
 @app.post("/billing/{username}/checkout/{plan}")
-def create_checkout_session(username: str, plan: str):
+def create_checkout_session(username: str, plan: str, _owner: str = Depends(require_legacy_account_owner)):
     if plan not in STRIPE_PRICE_IDS:
         return {"error": "Invalid plan"}
 
@@ -1466,8 +1456,8 @@ def create_checkout_session(username: str, plan: str):
                     "quantity": 1
                 }
             ],
-            success_url="http://127.0.0.1:8000/dashboard-ui/" + username,
-            cancel_url="http://127.0.0.1:8000/dashboard-ui/" + username,
+            success_url=legacy_checkout_return_url(username),
+            cancel_url=legacy_checkout_return_url(username),
             metadata={
                 "username": username,
                 "plan": plan
@@ -1484,7 +1474,7 @@ def create_checkout_session(username: str, plan: str):
         }
 
 @app.post("/billing/{username}/checkout/basic")
-def create_basic_checkout(username: str):
+def create_basic_checkout(username: str, _owner: str = Depends(require_legacy_account_owner)):
     try:
         session = stripe.checkout.Session.create(
             mode="subscription",
@@ -1494,8 +1484,8 @@ def create_basic_checkout(username: str):
                     "quantity": 1
                 }
             ],
-            success_url="http://127.0.0.1:8000/dashboard-ui/" + username,
-            cancel_url="http://127.0.0.1:8000/dashboard-ui/" + username,
+            success_url=legacy_checkout_return_url(username),
+            cancel_url=legacy_checkout_return_url(username),
             metadata={
                 "username": username,
                 "plan": "basic"
@@ -1508,7 +1498,7 @@ def create_basic_checkout(username: str):
         return {"error": str(e)}
 
 @app.post("/billing/{username}/checkout/pro")
-def checkout_pro(username: str):
+def checkout_pro(username: str, _owner: str = Depends(require_legacy_account_owner)):
     session = stripe.checkout.Session.create(
         payment_method_types=["card"],
         mode="subscription",
@@ -1516,8 +1506,8 @@ def checkout_pro(username: str):
             "price": STRIPE_PRICE_IDS["pro"],
             "quantity": 1
         }],
-        success_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
-        cancel_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
+        success_url=legacy_checkout_return_url(username),
+        cancel_url=legacy_checkout_return_url(username),
         metadata={
             "username": username,
             "plan": "pro"
@@ -1527,16 +1517,16 @@ def checkout_pro(username: str):
     return {"checkout_url": session.url}
 
 @app.post("/billing/{username}/checkout/premium")
-def checkout_premium(username: str):
+def checkout_premium(username: str, _owner: str = Depends(require_legacy_account_owner)):
     session = stripe.checkout.Session.create(
         payment_method_types=["card"],
         mode="subscription",
         line_items=[{
-            "price": STRIPE_PRICE_IDS["premium"],
+            "price": STRIPE_PRICE_IDS["elite"],
             "quantity": 1
         }],
-        success_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
-        cancel_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
+        success_url=legacy_checkout_return_url(username),
+        cancel_url=legacy_checkout_return_url(username),
         metadata={
             "username": username,
             "plan": "elite"
@@ -1548,36 +1538,54 @@ def checkout_premium(username: str):
 
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request):
+    """Only verified, paid subscription checkouts may grant entitlements."""
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Billing webhook is not configured.")
     payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-
+    signature = request.headers.get("stripe-signature")
+    if not signature:
+        raise HTTPException(status_code=400, detail="Missing Stripe signature.")
     try:
-        event = stripe.Webhook.construct_event(
-            payload,
-            sig_header,
-            STRIPE_WEBHOOK_SECRET
-        )
-    except Exception as e:
-        return {"error": str(e)}
+        event = stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
+    except (ValueError, stripe.error.SignatureVerificationError):
+        raise HTTPException(status_code=400, detail="Invalid Stripe webhook.")
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
+    if event["type"] != "checkout.session.completed":
+        return {"success": True}
 
-        usename = None
-        plan = None
+    session = event["data"]["object"]
+    metadata = session.get("metadata") or {}
+    username = metadata.get("username")
+    plan = metadata.get("plan")
+    expected_price = STRIPE_PRICE_IDS.get(plan)
+    if not username or not expected_price or session.get("mode") != "subscription":
+        return {"success": True, "activated": False}
 
-        if session.metadata:
-            username = session.metadata["username"] if "username" in session.metadata else None
-            plan = session.metadata["plan"] if "plan" in session.metadata else None
+    # Checkout completion alone is not proof of a paid subscription.
+    if session.get("payment_status") != "paid":
+        return {"success": True, "activated": False}
 
-        if username and plan:
-            activate_user_plan(username, plan)
+    # Validate the subscription's actual price, not just client-controllable metadata.
+    subscription_id = session.get("subscription")
+    if not subscription_id:
+        return {"success": True, "activated": False}
+    subscription = stripe.Subscription.retrieve(subscription_id)
+    if subscription.get("status") not in {"active", "trialing"}:
+        return {"success": True, "activated": False}
+    items = subscription.get("items", {}).get("data", [])
+    if not any(item.get("price", {}).get("id") == expected_price for item in items):
+        return {"success": True, "activated": False}
 
-    return {"success": True}
+    # Legacy entitlement names differ from Stripe product names.
+    entitlement_plan = "premium" if plan == "elite" else plan
+    result = activate_user_plan(username, entitlement_plan)
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail="Unable to activate subscription.")
+    return {"success": True, "activated": True}
 
 
 @app.post("/bots/{username}/create")
-def create_bot(username: str, bot: dict):
+def create_bot(username: str, bot: dict, _owner: str = Depends(require_legacy_account_owner)):
     billing = get_user_billing(username)
     features = billing["features"]
 
@@ -1684,7 +1692,7 @@ def create_bot(username: str, bot: dict):
 
 
 @app.post("/bots/{username}/{bot_id}/pause")
-def pause_bot(username: str, bot_id: str):
+def pause_bot(username: str, bot_id: str, _owner: str = Depends(require_legacy_account_owner)):
     bots = load_bots()
     user_bots = bots.get(username, [])
 
@@ -1703,7 +1711,7 @@ def pause_bot(username: str, bot_id: str):
 
 
 @app.post("/bots/{username}/{bot_id}/resume")
-def resume_bot(username: str, bot_id: str):
+def resume_bot(username: str, bot_id: str, _owner: str = Depends(require_legacy_account_owner)):
     bots = load_bots()
     user_bots = bots.get(username, [])
 
@@ -1724,7 +1732,7 @@ def resume_bot(username: str, bot_id: str):
 
 
 @app.delete("/bots/{username}/{bot_id}")
-def delete_bot(username: str, bot_id: str):
+def delete_bot(username: str, bot_id: str, _owner: str = Depends(require_legacy_account_owner)):
     bots = load_bots()
 
     user_bots = bots.get(username, [])
@@ -1754,7 +1762,7 @@ def delete_bot(username: str, bot_id: str):
 
 
 @app.get("/trade-history/{username}")
-def get_trade_history(username: str):
+def get_trade_history(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(TRADE_RESULTS_FILE):
         return []
 
@@ -1782,7 +1790,7 @@ def get_trade_history(username: str):
     return trades[-20:]
 
 @app.get("/bot-logs/{username}")
-def get_bot_logs(username: str):
+def get_bot_logs(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(BOT_LOG_FILE):
         return []
 
@@ -1804,16 +1812,16 @@ def get_bot_logs(username: str):
 
 
 @app.post("/bot-control/{username}/start")
-def start_bot(username: str):
+def start_bot(username: str, _owner: str = Depends(require_legacy_account_owner)):
     return save_bot_control(username, True)
 
 
 @app.post("/bot-control/{username}/stop")
-def stop_bot(username: str):
+def stop_bot(username: str, _owner: str = Depends(require_legacy_account_owner)):
     return save_bot_control(username, False)
 
 @app.get("/equity-history/{username}")
-def get_equity_history(username: str):
+def get_equity_history(username: str, _owner: str = Depends(require_legacy_account_owner)):
     if not os.path.exists(EQUITY_HISTORY_FILE):
         return []
 
@@ -3257,6 +3265,21 @@ def dashboard_ui(username: str):
         const savedUser = localStorage.getItem("bot_username");
         const savedToken = localStorage.getItem("bot_token");
 
+        // Legacy API calls require the authenticated session token.
+        // Browser navigation cannot attach custom headers, so the dashboard
+        // HTML remains a shell; user data endpoints enforce ownership.
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = (resource, options = {{}}) => {{
+            const url = typeof resource === "string" ? resource : resource.url;
+            const resolved = new URL(url, window.location.href);
+            if (resolved.origin !== window.location.origin || resolved.pathname.startsWith("/api/v1/")) {{
+                return originalFetch(resource, options);
+            }}
+            const headers = new Headers(options.headers || (resource instanceof Request ? resource.headers : undefined));
+            if (savedToken) headers.set("x-session-token", savedToken);
+            return originalFetch(resource, {{...options, headers}});
+        }};
+
         if (!savedUser || !savedToken) {{
             window.location.href = "/login";
        }}
@@ -4077,28 +4100,21 @@ async function loadEquityChart() {{
     }}
 
     async function changePlan(plan) {{
-    if (plan === 'basic') {{
-        const res = await fetch('/billing/{username}/checkout/basic', {{
+        const checkoutPlan = plan === "premium" ? "elite" : plan;
+        if (!["basic", "pro", "elite"].includes(checkoutPlan)) {{
+            alert("Unsupported subscription plan.");
+            return;
+        }}
+        const res = await fetch('/billing/{username}/checkout/' + checkoutPlan, {{
             method: 'POST'
         }});
-
         const data = await res.json();
-
-        if (data.checkout_url) {{
+        if (res.ok && data.checkout_url) {{
             window.location.href = data.checkout_url;
             return;
         }}
-
-        alert(data.error || 'Checkout failed');
-        return;
+        alert(data.detail || data.error || 'Checkout failed');
     }}
-
-    await fetch('/billing/{username}/set-plan/' + plan, {{
-        method: 'POST'
-    }});
-
-    loadBilling();
-}}
 
     let loadBotsRunning = false;
     let latestAssetPositions = [];

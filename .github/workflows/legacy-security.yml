@@ -1,0 +1,60 @@
+name: Legacy security regression
+on:
+  pull_request:
+    paths:
+      - "app/main.py"
+      - "tests/test_legacy_*.py"
+      - "tests/test_production_config_security.py"
+      - "app/core/config.py"
+      - "app/api/routes/desktop.py"
+      - "app/models/paper_wallet.py"
+      - "scripts/create_paper_wallet_table.py"
+      - "tests/test_desktop_api_contract.py"
+      - "tests/test_paper_wallet_sqlite.py"
+      - "tests/test_preview_approval_sqlite.py"
+      - "tests/test_preview_settlement_sqlite.py"
+      - "tests/test_preview_scan_sqlite.py"
+      - "tests/test_desktop_paper_bot_contract.py"
+      - "tests/test_desktop_paper_bot_sqlite.py"
+      - "app/models/desktop_paper_bot.py"
+      - "scripts/create_desktop_paper_bot_table.py"
+      - "scripts/check_paper_schema.py"
+      - "tests/test_paper_schema_safety.py"
+      - "tests/test_desktop_financial_integrity.py"
+      - "app/core/database.py"
+      - ".github/workflows/legacy-security.yml"
+  push:
+    branches:
+      - "security/disable-unverified-plan-upgrades"
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install configuration test dependencies
+        run: python -m pip install "pydantic>=2,<3" "pydantic-settings>=2,<3" "sqlalchemy>=2,<3"
+      - name: Compile backend and security tests
+        run: |
+          python -m compileall -q app tests
+      - name: Execute standalone legacy security regressions
+        run: |
+          python -m unittest discover -s tests -p "test_legacy_*.py" -v
+          python -m unittest discover -s tests -p "test_production_config_security.py" -v
+          python -m unittest discover -s tests -p "test_desktop_api_contract.py" -v
+          python -m unittest discover -s tests -p "test_paper_wallet_sqlite.py" -v
+          python -m unittest discover -s tests -p "test_preview_approval_sqlite.py" -v
+          python -m unittest discover -s tests -p "test_preview_settlement_sqlite.py" -v
+          python -m unittest discover -s tests -p "test_preview_scan_sqlite.py" -v
+          python -m unittest discover -s tests -p "test_desktop_paper_bot_contract.py" -v
+          python -m unittest discover -s tests -p "test_desktop_paper_bot_sqlite.py" -v
+          python -m unittest discover -s tests -p "test_paper_schema_safety.py" -v
+          python -m unittest discover -s tests -p "test_desktop_financial_integrity.py" -v
+      - name: Install exchange dependency for Linux reliability tests
+        run: python -m pip install "ccxt==4.5.67"
+      - name: Run Linux file-lock and restart recovery tests
+        run: |
+          python -m unittest discover -s tests -p "test_reliability.py" -v
+          python -m unittest discover -s tests -p "test_restart_recovery.py" -v

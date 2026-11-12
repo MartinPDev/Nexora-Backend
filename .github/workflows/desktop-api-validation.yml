@@ -1,0 +1,90 @@
+name: Desktop API runtime validation
+on:
+  push:
+    branches:
+      - security/disable-unverified-plan-upgrades
+  pull_request:
+  workflow_dispatch:
+jobs:
+  desktop-api-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile desktop API modules
+        run: python -m py_compile app/api/routes/desktop.py tests/test_desktop_wallet_contract.py tests/test_desktop_market_candles_contract.py app/api/routes/paper_preview.py app/models/paper_preview.py scripts/check_preview_schema.py scripts/local_preview_worker.py scripts/local_desktop_api.py
+      - name: Run offline API contract tests
+        run: python -m unittest discover -s tests -p 'test_desktop_*contract.py' -v
+  preview-schema-postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nexora_test
+          POSTGRES_PASSWORD: local_ci_only
+          POSTGRES_DB: cryptobot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexora_test -d cryptobot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGPASSWORD: local_ci_only
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create isolated user and paper bot dependencies
+        run: |
+          psql -h 127.0.0.1 -U nexora_test -d cryptobot -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE users (id varchar PRIMARY KEY);
+          CREATE TABLE nexora_desktop_paper_bots (id varchar PRIMARY KEY, user_id varchar REFERENCES users(id));
+          SQL
+      - name: Apply preview migration twice to check idempotency
+        run: |
+          psql -h 127.0.0.1 -U nexora_test -d cryptobot -v ON_ERROR_STOP=1 -f scripts/sql/preview_paper_v1.sql
+          psql -h 127.0.0.1 -U nexora_test -d cryptobot -v ON_ERROR_STOP=1 -f scripts/sql/preview_paper_v1.sql
+      - name: Verify durable tables and single-open-position constraint
+        run: |
+          psql -h 127.0.0.1 -U nexora_test -d cryptobot -v ON_ERROR_STOP=1 <<'SQL'
+          DO $preview$
+          BEGIN
+            IF to_regclass('public.nexora_preview_enrollments') IS NULL
+               OR to_regclass('public.nexora_preview_proposals') IS NULL
+               OR to_regclass('public.nexora_preview_positions') IS NULL
+               OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_preview_open_bot')
+            THEN
+              RAISE EXCEPTION 'Preview migration verification failed';
+            END IF;
+          END $preview$;
+          SQL
+      - name: Verify PostgreSQL prevents two open positions for one bot
+        run: |
+          psql -h 127.0.0.1 -U nexora_test -d cryptobot -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO users(id) VALUES ('alice');
+          INSERT INTO nexora_desktop_paper_bots(id,user_id) VALUES ('bot-1','alice');
+          INSERT INTO nexora_preview_proposals
+            (id,user_id,bot_id,symbol,candle_timestamp,price,quantity,principal,fee,payload_hash,status,expires_at)
+          VALUES
+            ('p1','alice','bot-1','BTC/USD',1,10000,0.01,100,0.26,'hash1','APPROVED',CURRENT_TIMESTAMP),
+            ('p2','alice','bot-1','BTC/USD',2,10000,0.01,100,0.26,'hash2','APPROVED',CURRENT_TIMESTAMP);
+          INSERT INTO nexora_preview_positions
+            (id,user_id,bot_id,proposal_id,symbol,entry_price,quantity,principal,entry_fee,peak_price,status)
+          VALUES ('pos1','alice','bot-1','p1','BTC/USD',10000,0.01,100,0.26,10000,'OPEN');
+          DO $preview$
+          BEGIN
+            BEGIN
+              INSERT INTO nexora_preview_positions
+                (id,user_id,bot_id,proposal_id,symbol,entry_price,quantity,principal,entry_fee,peak_price,status)
+              VALUES ('pos2','alice','bot-1','p2','BTC/USD',10000,0.01,100,0.26,10000,'OPEN');
+              RAISE EXCEPTION 'Duplicate open position was incorrectly accepted';
+            EXCEPTION WHEN unique_violation THEN
+              NULL;
+            END;
+          END $preview$;
+          SQL
