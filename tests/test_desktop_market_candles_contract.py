@@ -32,7 +32,11 @@ class KrakenCandleContractTest(unittest.TestCase):
                   if isinstance(node, ast.AsyncFunctionDef)
                   and node.name == "desktop_market_candles")
         segment = ast.get_source_segment(SOURCE, fn)
-        self.assertTrue(any(isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)\n                            and dec.func.attr == "get" and dec.args\n                            and isinstance(dec.args[0], ast.Constant)\n                            and dec.args[0].value == "/desktop/market-candles"\n                            for dec in fn.decorator_list))
+        self.assertTrue(any(isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                            and dec.func.attr == "get" and dec.args
+                            and isinstance(dec.args[0], ast.Constant)
+                            and dec.args[0].value == "/desktop/market-candles"
+                            for dec in fn.decorator_list))
         self.assertIn("get_current_user", segment)
         self.assertIn("_KRAKEN_PAIRS[symbol]", segment)
         self.assertIn("_KRAKEN_INTERVALS[timeframe]", segment)
