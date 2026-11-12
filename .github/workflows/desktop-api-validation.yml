@@ -52,7 +52,7 @@ jobs:
       - name: Verify durable tables and single-open-position constraint
         run: |
           psql -h 127.0.0.1 -U nexora_test -d cryptobot -v ON_ERROR_STOP=1 <<'SQL'
-          DO $$
+          DO $preview$
           BEGIN
             IF to_regclass('public.nexora_preview_enrollments') IS NULL
                OR to_regclass('public.nexora_preview_proposals') IS NULL
@@ -61,7 +61,7 @@ jobs:
             THEN
               RAISE EXCEPTION 'Preview migration verification failed';
             END IF;
-          END $;
+          END $preview$;
           SQL
       - name: Verify PostgreSQL prevents two open positions for one bot
         run: |
@@ -76,7 +76,7 @@ jobs:
           INSERT INTO nexora_preview_positions
             (id,user_id,bot_id,proposal_id,symbol,entry_price,quantity,principal,entry_fee,peak_price,status)
           VALUES ('pos1','alice','bot-1','p1','BTC/USD',10000,0.01,100,0.26,10000,'OPEN');
-          DO $
+          DO $preview$
           BEGIN
             BEGIN
               INSERT INTO nexora_preview_positions
@@ -86,5 +86,5 @@ jobs:
             EXCEPTION WHEN unique_violation THEN
               NULL;
             END;
-          END $;
+          END $preview$;
           SQL
