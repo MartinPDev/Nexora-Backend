@@ -18,3 +18,48 @@ jobs:
         run: python -m py_compile app/api/routes/desktop.py tests/test_desktop_wallet_contract.py tests/test_desktop_market_candles_contract.py app/api/routes/paper_preview.py app/models/paper_preview.py
       - name: Run offline API contract tests
         run: python -m unittest discover -s tests -p 'test_desktop_*contract.py' -v
+  preview-schema-postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nexora_test
+          POSTGRES_PASSWORD: local_ci_only
+          POSTGRES_DB: cryptobot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexora_test -d cryptobot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGPASSWORD: local_ci_only
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create isolated user and paper bot dependencies
+        run: |
+          psql -h 127.0.0.1 -U nexora_test -d cryptobot -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE users (id varchar PRIMARY KEY);
+          CREATE TABLE nexora_desktop_paper_bots (id varchar PRIMARY KEY, user_id varchar REFERENCES users(id));
+          SQL
+      - name: Apply preview migration twice to check idempotency
+        run: |
+          psql -h 127.0.0.1 -U nexora_test -d cryptobot -v ON_ERROR_STOP=1 -f scripts/sql/preview_paper_v1.sql
+          psql -h 127.0.0.1 -U nexora_test -d cryptobot -v ON_ERROR_STOP=1 -f scripts/sql/preview_paper_v1.sql
+      - name: Verify durable tables and single-open-position constraint
+        run: |
+          psql -h 127.0.0.1 -U nexora_test -d cryptobot -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF to_regclass('public.nexora_preview_enrollments') IS NULL
+               OR to_regclass('public.nexora_preview_proposals') IS NULL
+               OR to_regclass('public.nexora_preview_positions') IS NULL
+               OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_preview_open_bot')
+            THEN
+              RAISE EXCEPTION 'Preview migration verification failed';
+            END IF;
+          END $$;
+          SQL
