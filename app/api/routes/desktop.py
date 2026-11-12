@@ -336,8 +336,19 @@ def desktop_trades(
         .limit(200)
         .all()
     )
+    from app.models.paper_preview import PaperPreviewPosition
+    preview = db.query(PaperPreviewPosition).filter(
+        PaperPreviewPosition.user_id == current_user.id,
+        PaperPreviewPosition.status == "CLOSED",
+    ).order_by(PaperPreviewPosition.closed_at.desc()).limit(200).all()
     return {
-        "trades": [
+        "trades": [{
+            "id": position.id, "symbol": position.symbol, "side": "sell",
+            "amount": float(position.quantity), "price": float(position.exit_price),
+            "pnl": float(position.pnl),
+            "time": position.closed_at.isoformat() if position.closed_at else None,
+            "source": "paper_preview",
+        } for position in preview] + [
             {
                 "id": row.id,
                 "symbol": row.symbol,
@@ -350,7 +361,7 @@ def desktop_trades(
             }
             for row in rows
         ],
-        "data_status": "rapid_scalper_only",
+        "data_status": "persisted_paper_trades",
     }
 
 
