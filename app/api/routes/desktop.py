@@ -175,7 +175,11 @@ def desktop_portfolio(
         "currency": wallet.currency,
         "unrealized_pnl": None,
         "return_percent": None,
-        "positions": [],
+        "positions": [{
+            "id": p.id, "symbol": p.symbol, "amount": float(p.quantity),
+            "entry_price": float(p.entry_price), "current_price": None,
+            "current_value": None, "unrealized_pnl": None,
+        } for p in opened],
         "history": [],
         "financial_data_status": "cash_and_reservations_only",
     }
