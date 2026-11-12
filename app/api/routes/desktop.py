@@ -324,7 +324,7 @@ def desktop_trades(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Only persisted paper-executed scalper trades owned by this username."""
+    """Only owner-scoped, persisted settled paper trades from supported sources."""
     rows = (
         db.query(RapidScalperTrade)
         .filter(
@@ -342,7 +342,7 @@ def desktop_trades(
         PaperPreviewPosition.status == "CLOSED",
     ).order_by(PaperPreviewPosition.closed_at.desc()).limit(200).all()
     return {
-        "trades": [{
+        "trades": sorted([{
             "id": position.id, "symbol": position.symbol, "side": "sell",
             "amount": float(position.quantity), "price": float(position.exit_price),
             "pnl": float(position.pnl),
@@ -360,7 +360,7 @@ def desktop_trades(
                 "source": "rapid_scalper_paper",
             }
             for row in rows
-        ],
+        ], key=lambda trade: trade["time"] or "", reverse=True)[:200],
         "data_status": "persisted_paper_trades",
     }
 
