@@ -1,6 +1,7 @@
 """Explicit-approval paper preview. Public Kraken candles; never place exchange orders."""
 import hashlib
 import json
+import os
 import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
@@ -76,7 +77,7 @@ def read_preview(db: Session = Depends(get_db), user: User = Depends(get_current
             "permission": {"state": "APPROVAL_REQUIRED" if b.id in enrollments else "NOT_ENROLLED"},
             "proposals": [serial_proposal(p) for p in proposals if p.bot_id == b.id],
             "committed_gross": float(sum((D(p.principal) + D(p.entry_fee) for p in opened if p.bot_id == b.id), D(0))),
-            "observer": {"available": __import__("os").getenv("NEXORA_PREVIEW_WORKER") == "YES",
+            "observer": {"available": os.getenv("NEXORA_PREVIEW_WORKER") == "YES",
                          "enabled": bool(enrollments[b.id].observer_enabled) if b.id in enrollments else False,
                          "last_result": enrollments[b.id].last_action if b.id in enrollments else "OFF",
                          "last_reason": enrollments[b.id].last_reason if b.id in enrollments else "Not enrolled."},
@@ -294,7 +295,6 @@ async def settle(bot_id: str, db: Session = Depends(get_db), user: User = Depend
 
 @router.post("/desktop/paper-preview/{bot_id}/observer")
 def observer_on(bot_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    import os
     bot_owned(db, user, bot_id)
     if os.getenv("NEXORA_PREVIEW_WORKER") != "YES":
         raise HTTPException(503, "Local paper observer worker is not enabled.")
