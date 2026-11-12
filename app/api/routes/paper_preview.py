@@ -76,8 +76,9 @@ def read_preview(db: Session = Depends(get_db), user: User = Depends(get_current
             "permission": {"state": "APPROVAL_REQUIRED" if b.id in enrollments else "NOT_ENROLLED"},
             "proposals": [serial_proposal(p) for p in proposals if p.bot_id == b.id],
             "committed_gross": float(sum((D(p.principal) + D(p.entry_fee) for p in opened if p.bot_id == b.id), D(0))),
-            "observer": {"enabled": False, "last_result": "OFF",
-                         "last_reason": "Automatic background scanning is not enabled."},
+            "observer": {"enabled": bool(enrollments[b.id].observer_enabled) if b.id in enrollments else False,
+                         "last_result": enrollments[b.id].last_action if b.id in enrollments else "OFF",
+                         "last_reason": enrollments[b.id].last_reason if b.id in enrollments else "Not enrolled."},
             "last_decision": ({"action": enrollments[b.id].last_action, "reason": enrollments[b.id].last_reason}
                               if b.id in enrollments and enrollments[b.id].last_action else None),
         } for b in bots],
@@ -291,12 +292,24 @@ async def settle(bot_id: str, db: Session = Depends(get_db), user: User = Depend
 
 
 @router.post("/desktop/paper-preview/{bot_id}/observer")
-def observer_disabled(bot_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def observer_on(bot_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    import os
     bot_owned(db, user, bot_id)
-    raise HTTPException(503, "Background observer is not implemented; manual scanning remains available.")
+    if os.getenv("NEXORA_PREVIEW_WORKER") != "YES":
+        raise HTTPException(503, "Local paper observer worker is not enabled.")
+    record = enrollment(db, user, bot_id)
+    if record is None:
+        raise HTTPException(409, "Enroll this paper bot first.")
+    record.observer_enabled = True
+    db.commit()
+    return {"enabled": True, "mode": "paper", "approval_required": True}
 
 
 @router.delete("/desktop/paper-preview/{bot_id}/observer")
 def observer_off(bot_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     bot_owned(db, user, bot_id)
+    record = enrollment(db, user, bot_id)
+    if record is not None:
+        record.observer_enabled = False
+        db.commit()
     return {"enabled": False, "mode": "paper"}
