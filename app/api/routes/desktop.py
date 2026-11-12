@@ -400,7 +400,15 @@ def create_desktop_paper_bot(
     existing = db.query(DesktopPaperBot).filter(
         DesktopPaperBot.user_id == current_user.id
     ).all()
-    reserved = sum((Decimal(str(bot.allocated_cash)) for bot in existing), Decimal("0"))
+    from app.models.paper_preview import PaperPreviewPosition
+    open_positions = db.query(PaperPreviewPosition).filter(
+        PaperPreviewPosition.user_id == current_user.id,
+        PaperPreviewPosition.status == "OPEN",
+    ).all()
+    committed = {}
+    for position in open_positions:
+        committed[position.bot_id] = committed.get(position.bot_id, Decimal("0")) + Decimal(str(position.principal)) + Decimal(str(position.entry_fee))
+    reserved = sum((max(Decimal("0"), Decimal(str(bot.allocated_cash)) - committed.get(bot.id, Decimal("0"))) for bot in existing), Decimal("0"))
     if reserved + payload.allocated_cash > Decimal(str(wallet.cash_balance)):
         raise HTTPException(status_code=409, detail="Insufficient unallocated paper cash.")
     row = DesktopPaperBot(
