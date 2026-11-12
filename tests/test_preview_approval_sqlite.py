@@ -71,7 +71,7 @@ class PaperPreviewPosition(Base):
     principal: Mapped[Decimal] = mapped_column(Numeric(18, 8))
     entry_fee: Mapped[Decimal] = mapped_column(Numeric(18, 8))
     peak_price: Mapped[Decimal] = mapped_column(Numeric(24, 10))
-    status: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="OPEN", nullable=False)
 
 
 def load_approval():
