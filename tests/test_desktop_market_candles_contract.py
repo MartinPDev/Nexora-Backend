@@ -44,6 +44,17 @@ class KrakenCandleContractTest(unittest.TestCase):
         self.assertNotIn("api_key", segment)
         self.assertNotIn("secret", segment)
 
+    def test_watchlist_uses_completed_public_kraken_hourly_bars(self):
+        fn = next(node for node in TREE.body
+                  if isinstance(node, ast.AsyncFunctionDef)
+                  and node.name == "desktop_markets")
+        segment = ast.get_source_segment(SOURCE, fn)
+        self.assertIn("get_current_user", segment)
+        self.assertIn("_fetch_kraken_candles", segment)
+        self.assertIn("rows[:-1][-24:]", segment)
+        self.assertIn("asyncio.Semaphore(3)", segment)
+        self.assertIn('"partial_or_unavailable"', segment)
+
     def test_upstream_candles_validated(self):
         fn = next(node for node in TREE.body
                   if isinstance(node, ast.FunctionDef)
