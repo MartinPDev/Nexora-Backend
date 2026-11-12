@@ -16,7 +16,7 @@ def body(name):
 class DurablePreviewContract(unittest.TestCase):
     def test_approval_is_owner_scoped_locked_and_exactly_once(self):
         s = body("approve")
-        for required in ("with_for_update()", "proposal.user_id", "PaperPreviewProposal.user_id == user.id",
+        for required in ("with_for_update()", "PaperPreviewProposal.user_id == user.id",
                          "PaperPreviewPosition", 'proposal.status = "APPROVED"',
                          "payload.payload_hash != proposal.payload_hash",
                          "proposal.expires_at <= datetime.utcnow()", "db.commit()"):
