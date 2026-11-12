@@ -42,6 +42,8 @@ class DesktopPaperBot(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
     allocated_cash: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    symbol: Mapped[str] = mapped_column(String, default="BTC/USD")
+    timeframe: Mapped[str] = mapped_column(String, default="15m")
 
 
 class PaperPreviewProposal(Base):
@@ -50,6 +52,8 @@ class PaperPreviewProposal(Base):
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
     bot_id: Mapped[str] = mapped_column(String, ForeignKey("bots.id"), nullable=False)
     symbol: Mapped[str] = mapped_column(String)
+    candle_timestamp: Mapped[Decimal] = mapped_column(Numeric(20, 0), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     price: Mapped[Decimal] = mapped_column(Numeric(24, 10))
     quantity: Mapped[Decimal] = mapped_column(Numeric(24, 12))
     principal: Mapped[Decimal] = mapped_column(Numeric(18, 8))
