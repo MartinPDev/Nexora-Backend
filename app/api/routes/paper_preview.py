@@ -78,7 +78,8 @@ def read_preview(db: Session = Depends(get_db), user: User = Depends(get_current
             "committed_gross": float(sum((D(p.principal) + D(p.entry_fee) for p in opened if p.bot_id == b.id), D(0))),
             "observer": {"enabled": False, "last_result": "OFF",
                          "last_reason": "Automatic background scanning is not enabled."},
-            "last_decision": None,
+            "last_decision": ({"action": enrollments[b.id].last_action, "reason": enrollments[b.id].last_reason}
+                              if b.id in enrollments and enrollments[b.id].last_action else None),
         } for b in bots],
         "positions": [serial_position(p) for p in opened],
         "trades": [{
@@ -139,7 +140,12 @@ async def scan(bot_id: str, db: Session = Depends(get_db), user: User = Depends(
     fast, slow = ema(closes, 9), ema(closes, 20)
     previous_fast, previous_slow = ema(closes[:-1], 9), ema(closes[:-1], 20)
     if not (previous_fast <= previous_slow and fast > slow):
-        return {"action": "REJECT", "reason": "No completed-candle EMA9/EMA20 bullish crossover.", "proposal": None}
+        record = enrollment(db, user, bot_id)
+        record.last_action = "REJECT"
+        record.last_reason = "No completed-candle EMA9/EMA20 bullish crossover."
+        record.last_scanned_at = datetime.utcnow()
+        db.commit()
+        return {"action": "REJECT", "reason": record.last_reason, "proposal": None}
     price = closes[-1]
     principal = min(D(str(bot.allocated_cash)) / (D(1) + FEE_RATE), D("100"))
     principal = principal.quantize(MONEY, rounding=ROUND_DOWN)
@@ -161,6 +167,11 @@ async def scan(bot_id: str, db: Session = Depends(get_db), user: User = Depends(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(409, "This completed candle has already been evaluated.") from exc
+    record = enrollment(db, user, bot_id)
+    record.last_action = "PROPOSE"
+    record.last_reason = "Completed-candle EMA9/EMA20 bullish crossover."
+    record.last_scanned_at = datetime.utcnow()
+    db.commit()
     return {"action": "PROPOSE", "proposal": serial_proposal(proposal)}
 
 
