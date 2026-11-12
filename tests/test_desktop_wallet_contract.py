@@ -23,7 +23,7 @@ class DesktopWalletContractTest(unittest.TestCase):
         )
         self.assertIsNotNone(fn)
         segment = ast.get_source_segment(source, fn)
-        self.assertIn('"/desktop/paper-preview"', segment)
+        self.assertTrue(any(isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)\n                            and dec.func.attr == "get" and dec.args\n                            and isinstance(dec.args[0], ast.Constant)\n                            and dec.args[0].value == "/desktop/paper-preview"\n                            for dec in fn.decorator_list))
         self.assertIn("get_current_user", segment)
         self.assertIn("DesktopPaperBot.user_id == current_user.id", segment)
         self.assertIn('"available": False', segment)
