@@ -17,7 +17,7 @@ class DesktopApiContractTests(unittest.TestCase):
         tree = ast.parse(DESKTOP.read_text(encoding="utf-8"))
         paths = {}
         for fn in tree.body:
-            if not isinstance(fn, ast.FunctionDef):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for dec in fn.decorator_list:
                 if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute):
