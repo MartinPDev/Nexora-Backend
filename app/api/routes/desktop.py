@@ -169,6 +169,36 @@ def desktop_portfolio(
     }
 
 
+@router.get("/desktop/wallet")
+def desktop_wallet(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Paper-only wallet values backed by the persisted wallet and bot allocations.
+
+    Equity and P&L are intentionally null until a position/ledger source exists.
+    """
+    portfolio = desktop_portfolio(db=db, current_user=current_user)
+    wallet = db.query(PaperWallet).filter(
+        PaperWallet.user_id == current_user.id
+    ).first()
+    if wallet is None:
+        raise HTTPException(status_code=503, detail="Paper wallet unavailable.")
+    return {
+        "starting_balance": float(wallet.initial_balance),
+        "cash": float(wallet.cash_balance),
+        "allocated_cash": portfolio["reserved_cash"],
+        "available_to_allocate": portfolio["cash"],
+        "equity": None,
+        "pnl": None,
+        "pnl_percent": None,
+        "open_positions": None,
+        "currency": wallet.currency,
+        "mode": "paper",
+        "financial_data_status": "cash_and_reservations_only",
+    }
+
+
 @router.get("/desktop/trades")
 def desktop_trades(
     db: Session = Depends(get_db),
