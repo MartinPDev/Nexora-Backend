@@ -361,9 +361,44 @@ def desktop_notifications(current_user: User = Depends(get_current_user)):
 
 
 @router.get("/desktop/markets")
-def desktop_markets(current_user: User = Depends(get_current_user)):
-    """Fail explicitly until a vetted Kraken public market-data feed is connected."""
-    return {"markets": [], "data_status": "unavailable"}
+async def desktop_markets(current_user: User = Depends(get_current_user)):
+    """Public Kraken 24-hour OHLC watchlist, never simulated prices."""
+    import asyncio
+    from math import isfinite
+    semaphore = asyncio.Semaphore(3)
+
+    async def one(symbol, pair):
+        async with semaphore:
+            try:
+                rows = await asyncio.to_thread(_fetch_kraken_candles, pair, 60)
+                # Drop the still-forming hourly candle; require 24 completed bars.
+                completed = rows[:-1][-24:]
+                if len(completed) < 24:
+                    return None
+                opening = completed[0]["open"]
+                latest = completed[-1]["close"]
+                change = (latest / opening - 1) * 100
+                if not isfinite(change):
+                    return None
+                return {
+                    "symbol": symbol, "price": latest,
+                    "change_percent": change,
+                    "high": max(row["high"] for row in completed),
+                    "low": min(row["low"] for row in completed),
+                    "volume": sum(row["volume"] for row in completed),
+                    "source": "kraken_public_ohlc",
+                    "as_of": completed[-1]["timestamp"],
+                }
+            except (ValueError, OSError, TimeoutError):
+                return None
+
+    results = await asyncio.gather(*(one(symbol, pair) for symbol, pair in _KRAKEN_PAIRS.items()))
+    markets = [result for result in results if result is not None]
+    return {
+        "markets": markets,
+        "data_status": "available" if len(markets) == len(_KRAKEN_PAIRS) else "partial_or_unavailable",
+        "source": "kraken_public_ohlc",
+    }
 
 
 class DesktopPaperBotCreate(BaseModel):
