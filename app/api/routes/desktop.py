@@ -203,46 +203,6 @@ def desktop_wallet(
     }
 
 
-@router.get("/desktop/paper-preview")
-def desktop_paper_preview(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Read-only preview inventory until durable approvals and settlements exist.
-
-    Never infer enrollment, signals, positions or completed trades from a bot
-    configuration. The client must disable all mutations when available=false.
-    """
-    bots = db.query(DesktopPaperBot).filter(
-        DesktopPaperBot.user_id == current_user.id
-    ).all()
-    return {
-        "available": False,
-        "reason": "Paper Preview execution is not enabled on this backend.",
-        "mode": "paper",
-        "bots": [
-            {
-                "bot": {
-                    "id": bot.id,
-                    "name": bot.name,
-                    "symbol": bot.symbol,
-                    "timeframe": bot.timeframe,
-                    "allocated_cash": float(bot.allocated_cash),
-                    "allocation": float(bot.allocated_cash),
-                },
-                "permission": {"state": "NOT_ENROLLED"},
-                "proposals": [],
-                "committed_gross": 0.0,
-                "observer": {"enabled": False, "last_result": "OFF"},
-                "last_decision": None,
-            }
-            for bot in bots
-        ],
-        "positions": [],
-        "trades": [],
-    }
-
-
 # Public Kraken OHLC data only: no API keys, orders, or trading workers.
 _KRAKEN_PAIRS = {
     "BTC/USD": "XBTUSD", "ETH/USD": "ETHUSD", "XRP/USD": "XRPUSD",
