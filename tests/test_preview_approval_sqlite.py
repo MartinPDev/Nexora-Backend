@@ -59,7 +59,7 @@ class PaperPreviewProposal(Base):
     principal: Mapped[Decimal] = mapped_column(Numeric(18, 8))
     fee: Mapped[Decimal] = mapped_column(Numeric(18, 8))
     payload_hash: Mapped[str] = mapped_column(String)
-    status: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="PENDING")
     expires_at: Mapped[datetime] = mapped_column(nullable=False)
 
 
