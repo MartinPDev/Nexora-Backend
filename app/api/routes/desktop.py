@@ -445,6 +445,12 @@ def delete_desktop_paper_bot(
 ):
     """Remove only the owner's inert desktop configuration, releasing reservation."""
     bot = _owned_desktop_bot(db, current_user.id, bot_id)
+    from app.models.paper_preview import PaperPreviewEnrollment, PaperPreviewProposal, PaperPreviewPosition
+    if db.query(PaperPreviewPosition).filter(PaperPreviewPosition.bot_id == bot_id).first():
+        raise HTTPException(status_code=409, detail="Paper bot has position history and cannot be deleted.")
+    if db.query(PaperPreviewProposal).filter(PaperPreviewProposal.bot_id == bot_id).first():
+        raise HTTPException(status_code=409, detail="Paper bot has proposal history and cannot be deleted.")
+    db.query(PaperPreviewEnrollment).filter(PaperPreviewEnrollment.bot_id == bot_id).delete()
     db.delete(bot)
     db.commit()
     return {"id": bot_id, "deleted": True, "mode": "paper"}
