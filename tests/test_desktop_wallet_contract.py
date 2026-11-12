@@ -13,27 +13,19 @@ ROUTES = ROOT / "app" / "api" / "routes" / "desktop.py"
 
 
 class DesktopWalletContractTest(unittest.TestCase):
-    def test_preview_is_read_only_and_account_scoped(self):
-        source = ROUTES.read_text(encoding="utf-8")
+    def test_preview_is_persisted_and_owner_scoped(self):
+        source = (ROOT / "app" / "api" / "routes" / "paper_preview.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
-        fn = next(
-            (node for node in tree.body
-             if isinstance(node, ast.FunctionDef) and node.name == "desktop_paper_preview"),
-            None,
-        )
-        self.assertIsNotNone(fn)
-        segment = ast.get_source_segment(source, fn)
-        self.assertTrue(any(isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
-                            and dec.func.attr == "get" and dec.args
+        fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "read_preview")
+        self.assertTrue(any(isinstance(dec, ast.Call) and dec.args
                             and isinstance(dec.args[0], ast.Constant)
                             and dec.args[0].value == "/desktop/paper-preview"
                             for dec in fn.decorator_list))
-        self.assertIn("get_current_user", segment)
-        self.assertIn("DesktopPaperBot.user_id == current_user.id", segment)
-        self.assertIn('"available": False', segment)
-        self.assertIn('"proposals": []', segment)
-        self.assertIn('"positions": []', segment)
-        self.assertIn('"trades": []', segment)
+        body = ast.get_source_segment(source, fn)
+        self.assertIn("get_current_user", body)
+        self.assertIn("PaperPreviewProposal.user_id == user.id", body)
+        self.assertIn("PaperPreviewPosition.user_id == user.id", body)
+        self.assertIn('"available": True', body)
 
     def test_wallet_route_exists_and_is_authenticated(self):
         tree = ast.parse(ROUTES.read_text(encoding="utf-8"))
