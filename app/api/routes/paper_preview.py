@@ -133,6 +133,8 @@ async def scan(bot_id: str, db: Session = Depends(get_db), user: User = Depends(
     completed = rows[:-1]
     if len(completed) < 60:
         raise HTTPException(503, "Insufficient completed Kraken candles.")
+    if datetime.utcnow().timestamp() - completed[-1]["timestamp"] > 3 * _KRAKEN_INTERVALS[bot.timeframe] * 60:
+        raise HTTPException(503, "Kraken candle feed is stale.")
     closes = [D(str(row["close"])) for row in completed]
     fast, slow = ema(closes, 9), ema(closes, 20)
     previous_fast, previous_slow = ema(closes[:-1], 9), ema(closes[:-1], 20)
@@ -248,7 +250,7 @@ async def settle(bot_id: str, db: Session = Depends(get_db), user: User = Depend
         stop = max(entry * D("0.98"), peak * D("0.985"))
         target = entry * D("1.04")
         if low <= stop:
-            reason, exit_price = "STOP_OR_TRAIL", stop
+            reason, exit_price = "STOP_OR_TRAIL", min(stop, D(str(candle["open"])))
             break
         if high >= target:
             reason, exit_price = "TAKE_PROFIT", target
