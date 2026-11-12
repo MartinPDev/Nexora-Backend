@@ -434,3 +434,57 @@ def create_desktop_paper_bot(
         "is_enabled": False,
         "mode": "paper",
     }
+
+
+def _owned_desktop_bot(db: Session, user_id: str, bot_id: str) -> DesktopPaperBot:
+    bot = db.query(DesktopPaperBot).filter(
+        DesktopPaperBot.id == bot_id,
+        DesktopPaperBot.user_id == user_id,
+    ).first()
+    if bot is None:
+        raise HTTPException(status_code=404, detail="Paper bot not found.")
+    return bot
+
+
+@router.post("/desktop/bots/{bot_id}/pause")
+def pause_desktop_paper_bot(
+    bot_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Pause a configuration; never start or stop live exchange execution."""
+    bot = _owned_desktop_bot(db, current_user.id, bot_id)
+    bot.is_enabled = False
+    bot.status = "paused"
+    db.commit()
+    return {"id": bot.id, "status": "paused", "is_enabled": False, "mode": "paper"}
+
+
+@router.post("/desktop/bots/{bot_id}/resume")
+def resume_desktop_paper_bot(
+    bot_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Restore configured status only; paper execution is not yet implemented."""
+    bot = _owned_desktop_bot(db, current_user.id, bot_id)
+    bot.is_enabled = False
+    bot.status = "configured"
+    db.commit()
+    return {
+        "id": bot.id, "status": "configured", "is_enabled": False,
+        "mode": "paper", "execution_available": False,
+    }
+
+
+@router.delete("/desktop/bots/{bot_id}")
+def delete_desktop_paper_bot(
+    bot_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Remove only the owner's inert desktop configuration, releasing reservation."""
+    bot = _owned_desktop_bot(db, current_user.id, bot_id)
+    db.delete(bot)
+    db.commit()
+    return {"id": bot_id, "deleted": True, "mode": "paper"}
