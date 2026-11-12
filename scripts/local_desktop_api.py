@@ -6,7 +6,7 @@ import os
 from fastapi import FastAPI
 from sqlalchemy.engine import make_url
 from app.core.config import get_settings
-from app.api.routes import auth, users, strategies, desktop
+from app.api.routes import auth, users, strategies, desktop, paper_preview
 
 settings = get_settings()
 db = make_url(settings.database_url)
@@ -23,5 +23,5 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
-for router in (auth.router, users.router, strategies.router, desktop.router):
+for router in (auth.router, users.router, strategies.router, desktop.router, paper_preview.router):
     app.include_router(router, prefix="/api/v1")
