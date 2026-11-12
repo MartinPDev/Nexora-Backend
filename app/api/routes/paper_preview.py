@@ -214,6 +214,69 @@ def reject(proposal_id: str, db: Session = Depends(get_db), user: User = Depends
     return {"proposal_id": p.id, "status": "REJECTED"}
 
 
+@router.post("/desktop/paper-preview/{bot_id}/settle")
+async def settle(bot_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Check a completed public candle and settle a protective exit exactly once.
+
+    A user-initiated settlement is required until a durable scheduled worker exists.
+    """
+    import asyncio
+    bot = bot_owned(db, user, bot_id)
+    wallet = db.query(PaperWallet).filter(PaperWallet.user_id == user.id).with_for_update().first()
+    if wallet is None:
+        raise HTTPException(409, "Paper wallet not initialized.")
+    position = db.query(PaperPreviewPosition).filter(
+        PaperPreviewPosition.bot_id == bot.id, PaperPreviewPosition.user_id == user.id,
+        PaperPreviewPosition.status == "OPEN").with_for_update().first()
+    if position is None:
+        raise HTTPException(409, "No open paper position.")
+    if bot.symbol not in _KRAKEN_PAIRS or bot.timeframe not in _KRAKEN_INTERVALS:
+        raise HTTPException(422, "Unsupported Kraken pair or timeframe.")
+    try:
+        rows = await asyncio.to_thread(_fetch_kraken_candles, _KRAKEN_PAIRS[bot.symbol], _KRAKEN_INTERVALS[bot.timeframe])
+    except (OSError, ValueError, TimeoutError) as exc:
+        raise HTTPException(503, "Kraken candles unavailable.") from exc
+    # Only closed candles after entry; conservatively take stop before profit if both
+    # are touched within one candle. No fabricated fill at a favorable price.
+    after = [row for row in rows[:-1] if datetime.utcfromtimestamp(row["timestamp"]) > position.opened_at]
+    peak = D(position.peak_price)
+    entry = D(position.entry_price)
+    reason = None
+    exit_price = None
+    for candle in after:
+        low, high = D(str(candle["low"])), D(str(candle["high"]))
+        stop = max(entry * D("0.98"), peak * D("0.985"))
+        target = entry * D("1.04")
+        if low <= stop:
+            reason, exit_price = "STOP_OR_TRAIL", stop
+            break
+        if high >= target:
+            reason, exit_price = "TAKE_PROFIT", target
+            break
+        peak = max(peak, high)
+    if reason is None and datetime.utcnow() - position.opened_at >= timedelta(hours=24):
+        if not after:
+            raise HTTPException(503, "No completed candle available to settle maximum hold.")
+        reason, exit_price = "MAX_HOLD", D(str(after[-1]["close"]))
+    if reason is None:
+        position.peak_price = peak
+        db.commit()
+        return {"status": "OPEN", "bot_id": bot.id, "mode": "paper"}
+    proceeds = (D(position.quantity) * exit_price).quantize(MONEY, rounding=ROUND_DOWN)
+    exit_fee = (proceeds * FEE_RATE).quantize(MONEY, rounding=ROUND_DOWN)
+    pnl = proceeds - exit_fee - D(position.principal) - D(position.entry_fee)
+    wallet.cash_balance = D(wallet.cash_balance) + proceeds - exit_fee
+    position.status = "CLOSED"
+    position.closed_at = datetime.utcnow()
+    position.exit_price = exit_price
+    position.exit_fee = exit_fee
+    position.pnl = pnl
+    position.exit_reason = reason
+    db.commit()
+    return {"status": "CLOSED", "bot_id": bot.id, "reason": reason,
+            "exit_price": float(exit_price), "pnl": float(pnl), "mode": "paper"}
+
+
 @router.post("/desktop/paper-preview/{bot_id}/observer")
 def observer_disabled(bot_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     bot_owned(db, user, bot_id)
