@@ -292,6 +292,29 @@ async def desktop_market_candles(
     }
 
 
+@router.get("/desktop/positions")
+def desktop_positions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Only persisted, owner-scoped simulated holdings; never invent a mark price."""
+    from app.models.paper_preview import PaperPreviewPosition
+    rows = db.query(PaperPreviewPosition).filter(
+        PaperPreviewPosition.user_id == current_user.id,
+        PaperPreviewPosition.status == "OPEN",
+    ).all()
+    return {
+        "positions": [{
+            "id": p.id, "bot_id": p.bot_id, "symbol": p.symbol,
+            "quantity": float(p.quantity), "amount": float(p.quantity),
+            "entry_price": float(p.entry_price), "current_price": None,
+            "current_value": None, "unrealized_pnl": None,
+            "source": "paper_preview",
+        } for p in rows],
+        "data_status": "unvalued_paper_positions",
+    }
+
+
 @router.get("/desktop/trades")
 def desktop_trades(
     db: Session = Depends(get_db),
