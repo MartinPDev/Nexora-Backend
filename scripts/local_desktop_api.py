@@ -25,4 +25,24 @@ app = FastAPI(
 )
 for router in (auth.router, users.router, strategies.router, desktop.router, paper_preview.router):
     app.include_router(router, prefix="/api/v1")
-\n\n# Background scanning is opt-in and remains strictly paper-only.\nif os.getenv("NEXORA_PREVIEW_WORKER") == "YES":\n    import asyncio\n    from contextlib import asynccontextmanager\n    from scripts.local_preview_worker import observer_loop\n\n    @asynccontextmanager\n    async def preview_lifespan(app):\n        task = asyncio.create_task(observer_loop())\n        try:\n            yield\n        finally:\n            task.cancel()\n            try:\n                await task\n            except asyncio.CancelledError:\n                pass\n\n    app.router.lifespan_context = preview_lifespan\n
+
+
+# Background scanning is opt-in and remains strictly paper-only.
+if os.getenv("NEXORA_PREVIEW_WORKER") == "YES":
+    import asyncio
+    from contextlib import asynccontextmanager
+    from scripts.local_preview_worker import observer_loop
+
+    @asynccontextmanager
+    async def preview_lifespan(app):
+        task = asyncio.create_task(observer_loop())
+        try:
+            yield
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    app.router.lifespan_context = preview_lifespan
