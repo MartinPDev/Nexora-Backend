@@ -228,9 +228,11 @@ def desktop_paper_preview(
                     "symbol": bot.symbol,
                     "timeframe": bot.timeframe,
                     "allocated_cash": float(bot.allocated_cash),
+                    "allocation": float(bot.allocated_cash),
                 },
                 "permission": {"state": "NOT_ENROLLED"},
                 "proposals": [],
+                "committed_gross": 0.0,
                 "observer": {"enabled": False, "last_result": "OFF"},
                 "last_decision": None,
             }
