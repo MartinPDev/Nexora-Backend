@@ -4,6 +4,9 @@ CREATE TABLE IF NOT EXISTS nexora_preview_enrollments (
  bot_id varchar PRIMARY KEY REFERENCES nexora_desktop_paper_bots(id),
  user_id varchar NOT NULL REFERENCES users(id),
  observer_enabled boolean NOT NULL DEFAULT false,
+ last_action varchar(20),
+ last_reason text,
+ last_scanned_at timestamp,
  created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS ix_preview_enrollments_user ON nexora_preview_enrollments(user_id);
