@@ -153,7 +153,15 @@ def desktop_portfolio(
     allocated = db.query(DesktopPaperBot).filter(
         DesktopPaperBot.user_id == current_user.id
     ).all()
-    reserved = sum((Decimal(str(bot.allocated_cash)) for bot in allocated), Decimal("0"))
+    from app.models.paper_preview import PaperPreviewPosition
+    opened = db.query(PaperPreviewPosition).filter(
+        PaperPreviewPosition.user_id == current_user.id,
+        PaperPreviewPosition.status == "OPEN",
+    ).all()
+    committed = {}
+    for position in opened:
+        committed[position.bot_id] = committed.get(position.bot_id, Decimal("0")) + Decimal(str(position.principal)) + Decimal(str(position.entry_fee))
+    reserved = sum((max(Decimal("0"), Decimal(str(bot.allocated_cash)) - committed.get(bot.id, Decimal("0"))) for bot in allocated), Decimal("0"))
     available = Decimal(str(wallet.cash_balance)) - reserved
     return {
         "total_value": None,
