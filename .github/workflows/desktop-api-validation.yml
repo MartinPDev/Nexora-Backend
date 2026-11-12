@@ -1,0 +1,20 @@
+name: Desktop API runtime validation
+on:
+  push:
+    branches:
+      - security/disable-unverified-plan-upgrades
+  pull_request:
+  workflow_dispatch:
+jobs:
+  desktop-api-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile desktop API modules
+        run: python -m py_compile app/api/routes/desktop.py tests/test_desktop_wallet_contract.py tests/test_desktop_market_candles_contract.py
+      - name: Run offline API contract tests
+        run: python -m unittest discover -s tests -p 'test_desktop_*contract.py' -v
