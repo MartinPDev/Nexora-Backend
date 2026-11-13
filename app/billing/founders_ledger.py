@@ -133,6 +133,36 @@ class FoundersLedger:
                 db.execute("ROLLBACK")
                 raise
 
+    def release(self, account_id, reservation_id):
+        """Release only the matching unpaid reservation (e.g., checkout creation failed)."""
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                result = db.execute(
+                    "DELETE FROM founder_reservations WHERE account_id=? AND reservation_id=?",
+                    (account_id, reservation_id)
+                )
+                db.execute("COMMIT")
+                return result.rowcount == 1
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+
+    def revoke(self, provider_payment_id):
+        """Explicit administrative refund/dispute operation, never driven by browser input."""
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                result = db.execute(
+                    "DELETE FROM founder_purchases WHERE provider_payment_id=?",
+                    (provider_payment_id,)
+                )
+                db.execute("COMMIT")
+                return result.rowcount == 1
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+
     def entitlement(self, account_id):
         with self._db() as db:
             row = db.execute(
