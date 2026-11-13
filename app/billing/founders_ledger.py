@@ -29,8 +29,12 @@ class FoundersLedger:
                 provider_payment_id TEXT NOT NULL UNIQUE,
                 amount_cents INTEGER NOT NULL CHECK(amount_cents = 25000),
                 currency TEXT NOT NULL CHECK(currency = 'usd'),
-                purchased_at INTEGER NOT NULL
+                purchased_at INTEGER NOT NULL,
+                revoked_at INTEGER
             )""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(founder_purchases)")}
+            if "revoked_at" not in columns:
+                db.execute("ALTER TABLE founder_purchases ADD COLUMN revoked_at INTEGER")
             db.execute("""CREATE TABLE IF NOT EXISTS founder_events (
                 provider_event_id TEXT PRIMARY KEY,
                 provider_payment_id TEXT NOT NULL,
@@ -119,7 +123,7 @@ class FoundersLedger:
                 if founder_number is None:
                     raise FoundersSoldOut("Founders Edition is sold out")
                 db.execute(
-                    "INSERT INTO founder_purchases VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO founder_purchases (founder_number, account_id, provider_payment_id, amount_cents, currency, purchased_at) VALUES (?, ?, ?, ?, ?, ?)",
                     (founder_number, account_id, provider_payment_id, amount_cents, currency, now)
                 )
                 db.execute(
@@ -154,7 +158,7 @@ class FoundersLedger:
             db.execute("BEGIN IMMEDIATE")
             try:
                 result = db.execute(
-                    "DELETE FROM founder_purchases WHERE provider_payment_id=?",
+                    "UPDATE founder_purchases SET revoked_at = CAST(strftime('%s','now') AS INTEGER) WHERE provider_payment_id=? AND revoked_at IS NULL",
                     (provider_payment_id,)
                 )
                 db.execute("COMMIT")
@@ -166,7 +170,7 @@ class FoundersLedger:
     def entitlement(self, account_id):
         with self._db() as db:
             row = db.execute(
-                "SELECT founder_number FROM founder_purchases WHERE account_id=?", (account_id,)
+                "SELECT founder_number FROM founder_purchases WHERE account_id=? AND revoked_at IS NULL", (account_id,)
             ).fetchone()
             return {"plan": "elite", "lifetime": True, "founder_number": row["founder_number"]} if row else None
 
