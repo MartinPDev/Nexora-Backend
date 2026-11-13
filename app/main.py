@@ -90,6 +90,10 @@ class AuthRequest(BaseModel):
 settings = get_settings()
 
 app = FastAPI(title=settings.app_name)
+# Founders Edition is isolated and disabled unless explicitly enabled in staging.
+from app.billing.founders_routes import make_router as make_founders_router
+app.include_router(make_founders_router(SESSIONS))
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 from fastapi.staticfiles import StaticFiles
 
