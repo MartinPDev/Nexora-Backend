@@ -1,0 +1,24 @@
+name: Founders Edition billing tests
+
+on:
+  push:
+    branches:
+      - feature/founders-elite-billing
+  pull_request:
+    paths:
+      - 'app/billing/**'
+      - 'tests/test_founders_*.py'
+      - '.github/workflows/founders-billing-tests.yml'
+
+jobs:
+  founders-ledger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax check
+        run: python -m compileall -q app/billing tests/test_founders_ledger.py tests/test_founders_stripe.py
+      - name: Run isolated billing tests
+        run: python -m unittest discover -s tests -p 'test_founders_*.py' -v
