@@ -48,8 +48,21 @@ class FoundersLedgerTests(unittest.TestCase):
     def test_expired_reservation_releases_capacity(self):
         for i in range(50):
             self.ledger.reserve(f"account-{i}", f"reservation-{i}", now=100)
-        self.assertEqual(self.ledger.reserve("new", "new-reservation", now=2000)["status"], "reserved")
-        self.assertEqual(self.ledger.availability(now=2000)["available"], 49)
+        self.assertEqual(self.ledger.reserve("new", "new-reservation", now=4000)["status"], "reserved")
+        self.assertEqual(self.ledger.availability(now=4000)["available"], 49)
+
+    def test_release_requires_matching_reservation(self):
+        self.ledger.reserve("account-0", "reservation-0", now=100)
+        self.assertFalse(self.ledger.release("account-0", "incorrect"))
+        self.assertTrue(self.ledger.release("account-0", "reservation-0"))
+        self.assertFalse(self.ledger.release("account-0", "reservation-0"))
+
+    def test_revoke_refunded_payment(self):
+        self.ledger.reserve("account-0", "reservation-0", now=100)
+        self.pay(0)
+        self.assertFalse(self.ledger.revoke("nonexistent"))
+        self.assertTrue(self.ledger.revoke("payment-0"))
+        self.assertIsNone(self.ledger.entitlement("account-0"))
 
     def test_cannot_steal_payment(self):
         self.ledger.reserve("account-0", "reservation-0", now=100)
