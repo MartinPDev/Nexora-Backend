@@ -6,7 +6,7 @@ from contextlib import contextmanager
 LIMIT = 50
 AMOUNT_CENTS = 25000
 CURRENCY = "usd"
-RESERVATION_SECONDS = 30 * 60
+RESERVATION_SECONDS = 60 * 60
 
 class FoundersSoldOut(Exception):
     pass
