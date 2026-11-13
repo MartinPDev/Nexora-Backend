@@ -63,6 +63,9 @@ class FoundersLedgerTests(unittest.TestCase):
         self.assertFalse(self.ledger.revoke("nonexistent"))
         self.assertTrue(self.ledger.revoke("payment-0"))
         self.assertIsNone(self.ledger.entitlement("account-0"))
+        self.assertEqual(self.ledger.availability(now=100)["confirmed"], 1)
+        with self.assertRaises(InvalidPayment):
+            self.pay(0, provider_payment_id="another-payment", provider_event_id="another-event")
 
     def test_cannot_steal_payment(self):
         self.ledger.reserve("account-0", "reservation-0", now=100)
