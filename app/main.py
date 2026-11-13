@@ -303,12 +303,27 @@ def count_user_bots(username: str):
 
 
 def get_user_billing(username: str):
+    # Lifetime entitlements are server-owned, never accepted from the client.
+    if os.getenv("NEXORA_FOUNDERS_STAGING_ENABLED") == "1" and os.getenv("NEXORA_FOUNDERS_DB"):
+        from app.billing.founders_ledger import FoundersLedger
+        lifetime = FoundersLedger(os.environ["NEXORA_FOUNDERS_DB"]).entitlement(username)
+        if lifetime:
+            return {
+                "username": username,
+                "plan": "elite",
+                "subscription_status": "active",
+                "lifetime": True,
+                "founder_number": lifetime["founder_number"],
+                "features": {
+                    "max_bots": 10, "max_positions": 15,
+                    "paper_trading": True, "live_trading": True,
+                    "advanced_ai": True
+                }
+            }
     if not os.path.exists(BILLING_FILE):
         return get_default_billing(username)
-
     with open(BILLING_FILE, "r") as f:
         data = json.load(f)
-
     return data.get(username, get_default_billing(username))
 
 def activate_user_plan(username: str, plan: str):
@@ -1395,14 +1410,13 @@ async function signupBasic() {
 
 
 @app.get("/billing/{username}")
-def get_billing(username: str):
-    if not os.path.exists(BILLING_FILE):
-        return get_default_billing(username)
-
-    with open(BILLING_FILE, "r") as f:
-        data = json.load(f)
-
-    return data.get(username, get_default_billing(username))
+def get_billing(username: str, x_session_token: str = Header(None)):
+    account = SESSIONS.get(x_session_token or "")
+    if not account:
+        raise HTTPException(status_code=401, detail="Authenticated session required.")
+    if account != username:
+        raise HTTPException(status_code=403, detail="Account mismatch.")
+    return get_user_billing(account)
 
 # Public plan mutation is disabled. Entitlements must come from verified payment events.
 @app.post("/billing/{username}/set-plan/{plan}")
