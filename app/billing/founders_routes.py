@@ -48,7 +48,7 @@ def make_router(sessions):
         enabled()
         account = authenticated_account(x_session_token, sessions)
         secret = os.getenv("STRIPE_SECRET_KEY", "")
-        price_id = os.getenv("STRIPE_FOUNDERS_PRICE_ID", "")
+        price_id = os.getenv("STRIPE_FOUNDERS_PRICE_ID", "price_1UbRHwHuABr3asZeGyNcJize")
         origin = os.getenv("NEXORA_FOUNDERS_RETURN_ORIGIN", "").rstrip("/")
         if not secret.startswith("sk_test_") or not price_id or not origin.startswith("https://"):
             raise HTTPException(status_code=503, detail="Stripe test-mode checkout not configured")
