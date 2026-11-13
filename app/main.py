@@ -1400,181 +1400,23 @@ def get_billing(username: str):
 
     return data.get(username, get_default_billing(username))
 
+# Public plan mutation is disabled. Entitlements must come from verified payment events.
 @app.post("/billing/{username}/set-plan/{plan}")
 def set_plan(username: str, plan: str):
-    plans = {
-        "free": {
-            "max_bots": 1,
-            "max_positions": 2,
-            "paper_trading": True,
-            "live_trading": False,
-            "advanced_ai": False
-        },
-        "basic": {
-            "max_bots": 1,
-            "max_positions": 2,
-            "paper_trading": True,
-            "live_trading": False,
-            "advanced_ai": False
-        },
+    raise HTTPException(status_code=403, detail="Direct plan changes are disabled.")
 
-        "pro": {
-            "max_bots": 3,
-            "max_positions": 5,
-            "paper_trading": True,
-            "live_trading": True,
-            "advanced_ai": True
-        },
-        "premium": {
-            "max_bots": 10,
-            "max_positions": 15,
-            "paper_trading": True,
-            "live_trading": True,
-            "advanced_ai": True
-        }
-    }
-    if plan not in plans:
-        return {"error": "Invalid plan"}
-    billing = {}
-
-    if os.path.exists(BILLING_FILE):
-        with open(BILLING_FILE, "r") as f:
-            billing = json.load(f)
-
-    billing[username] = {
-        "username": username,
-        "plan": plan,
-        "subscription_status": "active" if plan != "free" else "inactive",
-        "features": plans[plan]
-    }
-    with open(BILLING_FILE, "w") as f:
-        json.dump(billing, f, indent=2)
-
-    return billing[username]
-
+# Legacy username-based checkouts are disabled until authenticated billing is integrated.
 @app.post("/billing/{username}/checkout/{plan}")
-def create_checkout_session(username: str, plan: str):
-    if plan not in STRIPE_PRICE_IDS:
-        return {"error": "Invalid plan"}
-
-    try:
-        session = stripe.checkout.Session.create(
-            mode="subscription",
-            line_items=[
-                {
-                    "price": STRIPE_PRICE_IDS[plan],
-                    "quantity": 1
-                }
-            ],
-            success_url="http://127.0.0.1:8000/dashboard-ui/" + username,
-            cancel_url="http://127.0.0.1:8000/dashboard-ui/" + username,
-            metadata={
-                "username": username,
-                "plan": plan
-            }
-        )
-
-        return {
-            "checkout_url": session.url
-        }
-
-    except Exception as e:
-        return {
-            "error": str(e)
-        }
-
 @app.post("/billing/{username}/checkout/basic")
-def create_basic_checkout(username: str):
-    try:
-        session = stripe.checkout.Session.create(
-            mode="subscription",
-            line_items=[
-                {
-                    "price": STRIPE_PRICE_IDS["basic"],
-                    "quantity": 1
-                }
-            ],
-            success_url="http://127.0.0.1:8000/dashboard-ui/" + username,
-            cancel_url="http://127.0.0.1:8000/dashboard-ui/" + username,
-            metadata={
-                "username": username,
-                "plan": "basic"
-            }
-        )
-
-        return {"checkout_url": session.url}
-
-    except Exception as e:
-        return {"error": str(e)}
-
 @app.post("/billing/{username}/checkout/pro")
-def checkout_pro(username: str):
-    session = stripe.checkout.Session.create(
-        payment_method_types=["card"],
-        mode="subscription",
-        line_items=[{
-            "price": STRIPE_PRICE_IDS["pro"],
-            "quantity": 1
-        }],
-        success_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
-        cancel_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
-        metadata={
-            "username": username,
-            "plan": "pro"
-        }
-    )
-
-    return {"checkout_url": session.url}
-
 @app.post("/billing/{username}/checkout/premium")
-def checkout_premium(username: str):
-    session = stripe.checkout.Session.create(
-        payment_method_types=["card"],
-        mode="subscription",
-        line_items=[{
-            "price": STRIPE_PRICE_IDS["premium"],
-            "quantity": 1
-        }],
-        success_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
-        cancel_url=f"http://127.0.0.1:8000/dashboard-ui/{username}",
-        metadata={
-            "username": username,
-            "plan": "elite"
-        }
-    )
+def legacy_checkout_disabled(username: str, plan: str = ""):
+    raise HTTPException(status_code=403, detail="Legacy checkout is disabled; use authenticated billing.")
 
-    return {"checkout_url": session.url}
-
-
+# Fail closed until signed, idempotent webhook fulfillment is integrated.
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request):
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-
-    try:
-        event = stripe.Webhook.construct_event(
-            payload,
-            sig_header,
-            STRIPE_WEBHOOK_SECRET
-        )
-    except Exception as e:
-        return {"error": str(e)}
-
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-
-        usename = None
-        plan = None
-
-        if session.metadata:
-            username = session.metadata["username"] if "username" in session.metadata else None
-            plan = session.metadata["plan"] if "plan" in session.metadata else None
-
-        if username and plan:
-            activate_user_plan(username, plan)
-
-    return {"success": True}
-
+    raise HTTPException(status_code=503, detail="Billing fulfillment is not yet enabled.")
 
 @app.post("/bots/{username}/create")
 def create_bot(username: str, bot: dict):
