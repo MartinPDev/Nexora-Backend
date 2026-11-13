@@ -52,6 +52,18 @@ def make_router(sessions):
         origin = os.getenv("NEXORA_FOUNDERS_RETURN_ORIGIN", "").rstrip("/")
         if not secret.startswith("sk_test_") or not price_id or not origin.startswith("https://"):
             raise HTTPException(status_code=503, detail="Stripe test-mode checkout not configured")
+        stripe.api_key = secret
+        try:
+            price = stripe.Price.retrieve(price_id)
+            if (price.get("active") is not True
+                    or price.get("currency") != "usd"
+                    or price.get("unit_amount") != 25000
+                    or price.get("type") != "one_time"):
+                raise HTTPException(status_code=503, detail="Founders Stripe price mismatch")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=503, detail="Unable to verify Stripe price")
         store = ledger()
         reservation_id = secrets.token_urlsafe(32)
         try:
@@ -94,6 +106,24 @@ def make_router(sessions):
             )
         except (ValueError, stripe.error.SignatureVerificationError):
             raise HTTPException(status_code=400, detail="Invalid webhook signature or payload")
+        if event["type"] in ("charge.refunded", "charge.dispute.created"):
+            # Verify the payment/charge with Stripe before revoking access.
+            stripe.api_key = secret
+            incoming = event["data"]["object"]
+            try:
+                if event["type"] == "charge.refunded":
+                    charge = stripe.Charge.retrieve(incoming["id"])
+                    if not charge.get("refunded"):
+                        return {"received": True}
+                else:
+                    dispute = stripe.Dispute.retrieve(incoming["id"])
+                    charge = stripe.Charge.retrieve(dispute["charge"])
+                payment_intent = charge.get("payment_intent")
+                if payment_intent:
+                    ledger().revoke(payment_intent)
+            except Exception:
+                raise HTTPException(status_code=503, detail="Refund/dispute processing unavailable")
+            return {"received": True}
         if event["type"] not in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
             return {"received": True}
         incoming = event["data"]["object"]
